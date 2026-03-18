@@ -1,0 +1,11 @@
+@ClinicalTrials.Api_HostAddress = http://localhost:5010
+
+GET {{ClinicalTrials.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
+
+GET {{ClinicalTrials.Api_HostAddress}}/api/studies/NCT04924608
+Accept: application/json
+
+###

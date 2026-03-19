@@ -1,10 +1,11 @@
+using ClinicalTrials.Shared;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ClinicalTrials.Api.Controllers;
 
 [ApiController]
 [Route("api/studies")]
-public sealed class StudiesController(IHttpClientFactory httpClientFactory, ILogger<StudiesController> logger) : ControllerBase
+public sealed class StudiesController(IStudyLookupService studyLookupService, ILogger<StudiesController> logger) : ControllerBase
 {
     [HttpGet("{nctId}")]
     [Produces("application/json")]
@@ -20,25 +21,11 @@ public sealed class StudiesController(IHttpClientFactory httpClientFactory, ILog
             });
         }
 
-        var client = httpClientFactory.CreateClient("ClinicalTrialsGov");
-        var upstreamPath = $"api/v2/studies/{Uri.EscapeDataString(nctId)}";
+        var result = await studyLookupService.GetStudyAsync(nctId, cancellationToken);
 
-        try
+        if (result.FailureKind == StudyLookupFailureKind.RequestFailed)
         {
-            using var upstreamResponse = await client.GetAsync(upstreamPath, cancellationToken);
-            var body = await upstreamResponse.Content.ReadAsStringAsync(cancellationToken);
-            var contentType = upstreamResponse.Content.Headers.ContentType?.ToString() ?? "application/json";
-
-            return new ContentResult
-            {
-                Content = body,
-                ContentType = contentType,
-                StatusCode = (int)upstreamResponse.StatusCode
-            };
-        }
-        catch (HttpRequestException ex)
-        {
-            logger.LogError(ex, "Failed to reach ClinicalTrials.gov for NCT ID {NctId}", nctId);
+            logger.LogError(result.Exception, "Failed to reach ClinicalTrials.gov for NCT ID {NctId}", nctId);
 
             return StatusCode(StatusCodes.Status502BadGateway, new ProblemDetails
             {
@@ -47,9 +34,10 @@ public sealed class StudiesController(IHttpClientFactory httpClientFactory, ILog
                 Status = StatusCodes.Status502BadGateway
             });
         }
-        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+
+        if (result.FailureKind == StudyLookupFailureKind.TimedOut)
         {
-            logger.LogWarning(ex, "ClinicalTrials.gov timed out for NCT ID {NctId}", nctId);
+            logger.LogWarning(result.Exception, "ClinicalTrials.gov timed out for NCT ID {NctId}", nctId);
 
             return StatusCode(StatusCodes.Status504GatewayTimeout, new ProblemDetails
             {
@@ -58,5 +46,12 @@ public sealed class StudiesController(IHttpClientFactory httpClientFactory, ILog
                 Status = StatusCodes.Status504GatewayTimeout
             });
         }
+
+        return new ContentResult
+        {
+            Content = result.Body,
+            ContentType = result.ContentType,
+            StatusCode = (int?)result.StatusCode
+        };
     }
 }

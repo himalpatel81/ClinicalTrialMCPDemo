@@ -1,15 +1,11 @@
+using ClinicalTrials.Shared;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
 builder.Services.AddControllers();
-builder.Services.AddHttpClient("ClinicalTrialsGov", client =>
-{
-    var baseUrl = builder.Configuration["ClinicalTrials:BaseUrl"]
-        ?? throw new InvalidOperationException("Configuration 'ClinicalTrials:BaseUrl' is required.");
-
-    client.BaseAddress = new Uri(baseUrl);
-});
+builder.Services.AddClinicalTrialsStudyLookup(builder.Configuration);
 builder.Services.AddOpenApi();
 
 var app = builder.Build();

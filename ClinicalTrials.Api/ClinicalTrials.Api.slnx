@@ -1,3 +1,6 @@
 <Solution>
+  <Project Path="../ClinicalTrials.Mcp/ClinicalTrials.Mcp/ClinicalTrials.Mcp.csproj" />
+  <Project Path="../ClinicalTrials.Shared/ClinicalTrials.Shared/ClinicalTrials.Shared.csproj" />
+  <Project Path="../ClinicalTrials.Tests/ClinicalTrials.Tests/ClinicalTrials.Tests.csproj" />
   <Project Path="ClinicalTrials.Api/ClinicalTrials.Api.csproj" />
 </Solution>

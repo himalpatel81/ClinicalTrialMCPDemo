@@ -209,7 +209,7 @@ On upstream `2xx`:
 - returns a `CallToolResult`
 - sets `IsError = false`
 - provides:
-  - `Content`: short text confirmation
+  - `Content`: clean human-readable summary derived from the study payload
   - `StructuredContent`: raw upstream JSON payload as `JsonElement`
 
 ### Error Response

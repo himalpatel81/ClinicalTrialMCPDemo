@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using ClinicalTrials.Shared;
 using ModelContextProtocol.Protocol;
@@ -84,7 +85,7 @@ public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILog
             [
                 new TextContentBlock
                 {
-                    Text = $"Study {trimmedNctId} retrieved successfully."
+                    Text = BuildStudySummary(structuredContent, trimmedNctId)
                 }
             ],
             StructuredContent = structuredContent
@@ -98,6 +99,55 @@ public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILog
     {
         using var document = JsonDocument.Parse(body);
         return document.RootElement.Clone();
+    }
+
+    private static string BuildStudySummary(JsonElement structuredContent, string requestedNctId)
+    {
+        var nctId = TryGetString(
+            structuredContent,
+            ["protocolSection", "identificationModule", "nctId"])
+            ?? TryGetString(structuredContent, ["nctId"])
+            ?? requestedNctId;
+
+        var title = TryGetString(
+            structuredContent,
+            ["protocolSection", "identificationModule", "briefTitle"])
+            ?? TryGetString(
+                structuredContent,
+                ["protocolSection", "identificationModule", "officialTitle"])
+            ?? TryGetString(structuredContent, ["briefTitle"])
+            ?? TryGetString(structuredContent, ["officialTitle"]);
+
+        var overallStatus = TryGetString(
+            structuredContent,
+            ["protocolSection", "statusModule", "overallStatus"])
+            ?? TryGetString(structuredContent, ["overallStatus"]);
+
+        var studyType = TryGetString(
+            structuredContent,
+            ["protocolSection", "designModule", "studyType"])
+            ?? TryGetString(structuredContent, ["studyType"]);
+
+        var summary = new StringBuilder();
+        summary.AppendLine("Study retrieved successfully.");
+        summary.AppendLine($"NCT ID: {nctId}");
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            summary.AppendLine($"Title: {title}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(overallStatus))
+        {
+            summary.AppendLine($"Overall status: {overallStatus}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(studyType))
+        {
+            summary.AppendLine($"Study type: {studyType}");
+        }
+
+        return summary.ToString().TrimEnd();
     }
 
     private static CallToolResult CreateErrorResult(
@@ -164,5 +214,23 @@ public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILog
         {
             return null;
         }
+    }
+
+    private static string? TryGetString(JsonElement element, string[] path)
+    {
+        var current = element;
+
+        foreach (var segment in path)
+        {
+            if (current.ValueKind != JsonValueKind.Object ||
+                !current.TryGetProperty(segment, out current))
+            {
+                return null;
+            }
+        }
+
+        return current.ValueKind == JsonValueKind.String
+            ? current.GetString()
+            : null;
     }
 }

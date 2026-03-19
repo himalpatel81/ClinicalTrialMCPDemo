@@ -16,7 +16,7 @@ public sealed class StudiesMcpToolsTests
             Result = StudyLookupResult.FromUpstream(
                 HttpStatusCode.OK,
                 "application/json",
-                """{"nctId":"NCT04924608","briefTitle":"Study title"}""")
+                """{"nctId":"NCT04924608","briefTitle":"Study title","overallStatus":"RECRUITING","studyType":"INTERVENTIONAL"}""")
         };
 
         var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
@@ -32,6 +32,9 @@ public sealed class StudiesMcpToolsTests
 
         var textBlock = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
         Assert.Contains("NCT04924608", textBlock.Text);
+        Assert.Contains("Study title", textBlock.Text);
+        Assert.Contains("RECRUITING", textBlock.Text);
+        Assert.Contains("INTERVENTIONAL", textBlock.Text);
     }
 
     [Fact]

@@ -34,6 +34,7 @@ Success behavior:
 
 - trims leading and trailing whitespace
 - calls the shared ClinicalTrials.gov proxy service
+- returns a clean summary in the visible tool content
 - returns the upstream study payload as structured JSON
 
 Failure behavior:

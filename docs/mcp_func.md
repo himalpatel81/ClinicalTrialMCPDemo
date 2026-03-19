@@ -96,11 +96,12 @@ When the study exists and ClinicalTrials.gov responds successfully:
 
 - the tool returns a success result
 - `IsError` is `false`
-- a short text message is included
+- a clean human-readable summary is included
 - the full study payload is returned as structured JSON
 
 Functional expectation:
 
+- the client can show a readable summary in the UI
 - the client can inspect the raw study data directly
 - no important study fields are removed by this server
 
@@ -338,4 +339,3 @@ The implementation is functionally correct when all of the following are true:
 1. Add more study-related tools only when there is a clear consumer need.
 2. Decide whether users need a curated summary tool in addition to raw JSON.
 3. Define production access rules before broader distribution.
-

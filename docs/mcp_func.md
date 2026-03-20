@@ -291,6 +291,7 @@ Clients should expect:
 - raw JSON study output on success
 - structured status-driven error output on failure
 - local development HTTP endpoint at `http://localhost:5011/mcp`
+- stateless tool calls with no long-lived client session requirement
 
 Clients should not assume:
 

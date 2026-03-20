@@ -6,11 +6,13 @@ This document describes how to run and test the HTTP MCP server that exposes stu
 
 - Project: `ClinicalTrials.Mcp`
 - MCP transport: HTTP
+- MCP mode: stateless streamable HTTP
 - MCP endpoint: `http://localhost:5011/mcp`
 - Health endpoint: `http://localhost:5011/health`
 - Tool: `get_study_by_nct_id`
 
 The MCP server shares the same ClinicalTrials.gov lookup service as the REST API so both surfaces stay aligned.
+It is configured in stateless mode, which avoids stale `MCP-Session-Id` problems for this read-only tool scenario.
 
 ## Run The MCP Server
 

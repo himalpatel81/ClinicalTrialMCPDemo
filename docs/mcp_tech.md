@@ -56,6 +56,7 @@ The MCP host is an ASP.NET Core application configured in `ClinicalTrials.Mcp`.
 Responsibilities:
 
 - host MCP over HTTP using streamable HTTP transport
+- run MCP in stateless HTTP mode
 - discover and register tool classes from assembly
 - expose a non-MCP `/health` endpoint
 - apply permissive CORS for local development
@@ -67,7 +68,7 @@ Key startup behavior:
 - registers shared ClinicalTrials.gov lookup services
 - configures MCP using:
   - `AddMcpServer()`
-  - `WithHttpTransport()`
+  - `WithHttpTransport(options => options.Stateless = true)`
   - `WithToolsFromAssembly(...)`
 - maps:
   - `GET /health`
@@ -172,6 +173,18 @@ Current local MCP endpoint:
 Current health endpoint:
 
 - `http://localhost:5011/health`
+
+### Transport Mode
+
+The MCP host is configured for stateless Streamable HTTP mode.
+
+Implications:
+
+- the server does not use `MCP-Session-Id`
+- requests are independent from one another
+- restarting the MCP host does not invalidate a client-held session ID because no session ID is issued
+- legacy SSE session behavior is not used
+- server-to-client requests such as elicitation and sampling are unavailable
 
 ## MCP Tool Design
 
@@ -318,6 +331,17 @@ Coverage includes:
 - MCP tool invocation through an MCP client
 
 ## Operational Notes
+
+### Stateless MCP
+
+The current MCP host uses stateless HTTP mode because the server only exposes a simple read-only lookup tool.
+
+Benefits for this implementation:
+
+- avoids stale session errors after server restarts
+- simplifies local development
+- is a better fit for independent request/response tools
+- improves load-balancing compatibility if the host is later deployed behind multiple instances
 
 ### CORS
 

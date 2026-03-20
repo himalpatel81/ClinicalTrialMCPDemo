@@ -18,7 +18,10 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddClinicalTrialsStudyLookup(builder.Configuration);
 builder.Services.AddMcpServer()
-    .WithHttpTransport()
+    .WithHttpTransport(options =>
+    {
+        options.Stateless = true;
+    })
     .WithToolsFromAssembly(typeof(StudiesMcpTools).Assembly);
 
 var app = builder.Build();

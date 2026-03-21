@@ -9,7 +9,8 @@ namespace ClinicalTrials.Tests.Testing;
 
 internal sealed class TestWebApplicationFactory<TEntryPoint>(
     HttpMessageHandler handler,
-    IReadOnlyDictionary<string, string?>? additionalConfiguration = null)
+    IReadOnlyDictionary<string, string?>? additionalConfiguration = null,
+    TestClientRegistryStore? clientRegistryStore = null)
     : WebApplicationFactory<TEntryPoint> where TEntryPoint : class
 {
     public const string DefaultApiKey = "integration-test-api-key";
@@ -24,10 +25,16 @@ internal sealed class TestWebApplicationFactory<TEntryPoint>(
                 ["ClinicalTrials:BaseUrl"] = "https://clinicaltrials.test/",
                 ["StudyService:BaseUrl"] = "https://clinicaltrials.api.test/",
                 ["StudyService:StudyLookupPathTemplate"] = "api/studies/{nctId}",
+                ["ConnectionStrings:ClientRegistry"] = "Server=integration;Database=ClinicalTrialsMcp;User Id=test;Password=test;",
+                ["Caching:Provider"] = "Memory",
+                ["Caching:SuccessTtlSeconds"] = "300",
+                ["Caching:NotFoundTtlSeconds"] = "60",
+                ["RateLimiting:Provider"] = "Memory",
+                ["RateLimiting:WindowSeconds"] = "60",
+                ["RateLimiting:PerClientPermitLimit"] = "60",
+                ["RateLimiting:GlobalPermitLimit"] = "600",
                 ["Authentication:ApiKeys:HeaderName"] = ApiKeyHeaderName,
-                ["Authentication:ApiKeys:Clients:0:ClientId"] = "integration-test-client",
-                ["Authentication:ApiKeys:Clients:0:ApiKey"] = DefaultApiKey,
-                ["Authentication:ApiKeys:Clients:0:Enabled"] = "true"
+                ["ConnectionStrings:Redis"] = ""
             };
 
             if (additionalConfiguration is not null)
@@ -47,6 +54,8 @@ internal sealed class TestWebApplicationFactory<TEntryPoint>(
                 .ConfigurePrimaryHttpMessageHandler(() => handler);
             services.AddHttpClient(ClinicalTrials.Mcp.Services.StudyServiceHttpClient.ClientName)
                 .ConfigurePrimaryHttpMessageHandler(() => handler);
+            services.AddScoped<ClinicalTrials.Mcp.Data.IClientRegistryStore>(_ =>
+                clientRegistryStore ?? TestClientRegistryStore.CreateDefault(DefaultApiKey));
         });
     }
 

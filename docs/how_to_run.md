@@ -1,13 +1,14 @@
 # How To Run
 
-This document explains how to run the ClinicalTrials REST API, the MCP server, and the automated tests from this repository.
+This document explains how to run the ClinicalTrials REST API, the MCP server, the admin CLI, and the automated tests from this repository.
 
-Local runtime remains a required use case. The MCP server must stay runnable on a developer machine without Azure Key Vault, Azure SQL, Azure Redis, or Azure Monitor.
+Local runtime remains a required use case. The MCP server stays runnable on a developer machine without Azure Key Vault, Azure SQL, Azure Redis, or Azure Monitor.
 
 ## Prerequisites
 
 - .NET SDK `10.x`
 - internet access to reach `https://clinicaltrials.gov/`
+- local SQL Server instance already running
 - PowerShell or another terminal that can run `dotnet`
 
 ## Repository Root
@@ -24,8 +25,10 @@ cd E:\GitHimal\ClinicalTrialMCPDemo
   - REST API host
 - `ClinicalTrials.Mcp`
   - HTTP MCP host
+- `ClinicalTrials.Admin`
+  - admin CLI for client and API key lifecycle
 - `ClinicalTrials.Shared`
-  - shared ClinicalTrials.gov lookup service
+  - shared ClinicalTrials.gov lookup service used by the REST API
 - `ClinicalTrials.Tests`
   - automated tests
 
@@ -34,6 +37,31 @@ cd E:\GitHimal\ClinicalTrialMCPDemo
 ```powershell
 dotnet build .\ClinicalTrials.Api\ClinicalTrials.Api.slnx
 ```
+
+## Prepare Local SQL
+
+Run these checked-in SQL scripts against your local SQL Server instance:
+
+1. [001_create_client_registry.sql](/e:/GitHimal/ClinicalTrialMCPDemo/SQL/001_create_client_registry.sql)
+2. [002_seed_local_dev_client.sql](/e:/GitHimal/ClinicalTrialMCPDemo/SQL/002_seed_local_dev_client.sql)
+
+The seed script inserts the local development client and this raw API key:
+
+```text
+clinical-trials-local-dev-key
+```
+
+## Set The MCP Client Registry Connection String
+
+The MCP host now requires a SQL connection string for the client registry.
+
+Set it in the current PowerShell session before starting the MCP host:
+
+```powershell
+$env:ConnectionStrings__ClientRegistry = "Server=localhost,1433;Database=ClinicalTrialsMcp;User Id=sa;Password=<your-password>;Encrypt=False;TrustServerCertificate=True"
+```
+
+You can also set the same value with `.NET user-secrets` for the MCP project if you prefer.
 
 ## Run The REST API
 
@@ -59,7 +87,7 @@ Expected result:
 
 ## Run The MCP Server
 
-The MCP host now routes study lookups through `ClinicalTrials.Api`.
+The MCP host now routes study lookups through `ClinicalTrials.Api` and authenticates callers against the SQL-backed client registry.
 
 For local development, start the REST API before starting the MCP server.
 
@@ -88,9 +116,9 @@ Important endpoints:
 
 ## Local MCP Authentication
 
-The MCP endpoint now requires an API key.
+The MCP endpoint requires an API key.
 
-Local development uses this seeded key:
+Local development uses this seeded key after you run the SQL seed script:
 
 ```text
 clinical-trials-local-dev-key
@@ -102,7 +130,15 @@ Header name:
 X-Api-Key
 ```
 
-This key is for local development only. Do not reuse it in any shared or production environment.
+## Local Cache And Rate Limiting
+
+Local development uses:
+
+- SQL Server for the client registry
+- in-memory study lookup caching
+- in-memory rate limiting
+
+Local development does not require local Redis.
 
 ## Verify The MCP Server
 
@@ -120,8 +156,8 @@ Expected result:
 
 Important:
 
-- `/health/ready` validates MCP host configuration only
-- a successful health check does not prove the REST API is currently reachable
+- `/health/ready` validates MCP host configuration for the current phase
+- `/health/ready` does not prove `ClinicalTrials.Api` is currently reachable
 
 ## Connect An MCP Client
 
@@ -165,7 +201,48 @@ Expected result:
 - the client sends `X-Api-Key`
 - the tool returns a clean summary in visible content
 - the tool returns the raw study JSON as structured content
-- the lookup request is sent from MCP to `ClinicalTrials.Api`, which then calls ClinicalTrials.gov
+- the MCP host calls `ClinicalTrials.Api`
+- the REST API then calls ClinicalTrials.gov
+
+## Use The Admin CLI
+
+The admin CLI project is:
+
+```text
+ClinicalTrials.Admin\ClinicalTrials.Admin\ClinicalTrials.Admin.csproj
+```
+
+Example commands:
+
+Create a client:
+
+```powershell
+dotnet run --project .\ClinicalTrials.Admin\ClinicalTrials.Admin\ClinicalTrials.Admin.csproj -- create-client --connection-string "$env:ConnectionStrings__ClientRegistry" --client-code demo-client --display-name "Demo Client"
+```
+
+Issue an API key:
+
+```powershell
+dotnet run --project .\ClinicalTrials.Admin\ClinicalTrials.Admin\ClinicalTrials.Admin.csproj -- issue-key --connection-string "$env:ConnectionStrings__ClientRegistry" --client-code demo-client --key-label primary
+```
+
+Rotate an API key:
+
+```powershell
+dotnet run --project .\ClinicalTrials.Admin\ClinicalTrials.Admin\ClinicalTrials.Admin.csproj -- rotate-key --connection-string "$env:ConnectionStrings__ClientRegistry" --client-code demo-client --key-label rotated
+```
+
+Revoke an API key:
+
+```powershell
+dotnet run --project .\ClinicalTrials.Admin\ClinicalTrials.Admin\ClinicalTrials.Admin.csproj -- revoke-key --connection-string "$env:ConnectionStrings__ClientRegistry" --api-key-id <guid>
+```
+
+Deactivate a client:
+
+```powershell
+dotnet run --project .\ClinicalTrials.Admin\ClinicalTrials.Admin\ClinicalTrials.Admin.csproj -- deactivate-client --connection-string "$env:ConnectionStrings__ClientRegistry" --client-code demo-client
+```
 
 ## Run Automated Tests
 
@@ -178,69 +255,49 @@ The test suite covers:
 - shared lookup service behavior
 - REST API integration behavior
 - MCP tool behavior
+- SQL-backed API key hashing and verification behavior
+- cached study lookup behavior
+- admin service behavior
 - MCP host integration behavior
-- authenticated and unauthenticated MCP access
-
-## Run API And MCP Together
-
-Open two terminals from the repo root.
-
-Terminal 1:
-
-```powershell
-dotnet run --project .\ClinicalTrials.Api\ClinicalTrials.Api\ClinicalTrials.Api.csproj
-```
-
-Terminal 2:
-
-```powershell
-dotnet run --project .\ClinicalTrials.Mcp\ClinicalTrials.Mcp\ClinicalTrials.Mcp.csproj
-```
-
-Then use:
-
-- REST API on `http://localhost:5010`
-- MCP on `http://localhost:5011/mcp`
+- rate limiting behavior
 
 ## Common Troubleshooting
 
-### ClinicalTrials.gov Cannot Be Reached
-
-Symptoms:
-
-- REST API returns `502` or `504`
-- MCP tool returns structured error with `502` or `504`
+### MCP Host Fails To Start
 
 Checks:
 
-- verify internet access
-- verify `https://clinicaltrials.gov/` is reachable
-- verify `ClinicalTrials:BaseUrl` is present in the REST API configuration
+- verify `ConnectionStrings__ClientRegistry` is set
+- verify `StudyService:BaseUrl` points to the REST API host
+- verify cache and rate limit providers are `Memory` in local development
 
-### MCP Client Gets `401 Unauthorized`
+### MCP Returns `401 Unauthorized`
 
 Checks:
 
+- verify the SQL seed script ran successfully
 - verify the client is sending `X-Api-Key`
 - verify the local key value is `clinical-trials-local-dev-key`
-- verify the MCP server is running in `Development`
 
-### MCP Client Cannot Connect
+### MCP Returns `403 Forbidden`
 
 Checks:
 
-- verify the MCP server is running
-- verify `.vscode\mcp.json` points to `http://localhost:5011/mcp`
-- verify `.vscode\mcp.json` includes the `X-Api-Key` header
-- verify `http://localhost:5011/health/live` responds successfully
-- verify `http://localhost:5011/health/ready` responds successfully
+- verify the client record and key record are still active in the client registry
+- verify the key has not been revoked or expired
+
+### MCP Returns `429 Too Many Requests`
+
+Checks:
+
+- retry after the current rate-limit window
+- check whether the local client has a permit limit override in the client registry
 
 ### MCP Returns `502 Bad Gateway`
 
 Checks:
 
 - verify `ClinicalTrials.Api` is running on `http://localhost:5010`
-- verify `StudyService:BaseUrl` points to the correct REST API host
 - verify the REST API can answer `http://localhost:5010/api/studies/NCT04924608`
 
 ## Related Documents

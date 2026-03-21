@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace ClinicalTrials.Mcp.Services;
 
-public sealed class StudyServiceHttpClient(
+public class StudyServiceHttpClient(
     IHttpClientFactory httpClientFactory,
     IOptions<StudyServiceSettings> settings)
     : IStudyLookupEndpointClient
@@ -12,7 +12,7 @@ public sealed class StudyServiceHttpClient(
 
     private readonly StudyServiceSettings settings = settings.Value;
 
-    public async Task<StudyLookupResult> GetStudyAsync(string nctId, CancellationToken cancellationToken)
+    public virtual async Task<StudyLookupResult> GetStudyAsync(string nctId, CancellationToken cancellationToken)
     {
         var client = httpClientFactory.CreateClient(ClientName);
         var requestPath = this.settings.StudyLookupPathTemplate.Replace(

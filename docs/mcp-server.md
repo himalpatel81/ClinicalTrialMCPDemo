@@ -1,6 +1,6 @@
 # ClinicalTrials MCP Server
 
-This document describes how to run and test the HTTP MCP server that exposes study lookup for ClinicalTrials.gov.
+This document describes the Phase 2 HTTP MCP server that exposes study lookup for ClinicalTrials.gov through `ClinicalTrials.Api`.
 
 ## Overview
 
@@ -13,46 +13,39 @@ This document describes how to run and test the HTTP MCP server that exposes stu
 - Tool: `get_study_by_nct_id`
 - Local development auth header: `X-Api-Key: clinical-trials-local-dev-key`
 - Local development study service target: `http://localhost:5010/api/studies/{nctId}`
+- Local client registry backing store: SQL Server
+- Local cache and rate limiting: in-memory
 
-The MCP server no longer calls ClinicalTrials.gov directly.
-It calls a configurable external study service, and the local default points to `ClinicalTrials.Api`.
-It is configured in stateless mode, which avoids stale `MCP-Session-Id` problems for this read-only tool scenario.
-Local execution remains a required use case, and the local path remains independent of Azure-managed services.
+The MCP server does not call ClinicalTrials.gov directly. It calls a configurable study service, and the local default points to `ClinicalTrials.Api`.
 
-## Run The MCP Server
+## Local Prerequisites
 
-From the repository root:
+Before local MCP calls will work:
 
-Terminal 1:
-
-```powershell
-dotnet run --project .\ClinicalTrials.Api\ClinicalTrials.Api\ClinicalTrials.Api.csproj
-```
-
-Terminal 2:
-
-```powershell
-dotnet run --project .\ClinicalTrials.Mcp\ClinicalTrials.Mcp\ClinicalTrials.Mcp.csproj
-```
-
-The REST API must be running first for local MCP lookups to succeed.
+1. run [001_create_client_registry.sql](/e:/GitHimal/ClinicalTrialMCPDemo/SQL/001_create_client_registry.sql)
+2. run [002_seed_local_dev_client.sql](/e:/GitHimal/ClinicalTrialMCPDemo/SQL/002_seed_local_dev_client.sql)
+3. set `ConnectionStrings__ClientRegistry`
+4. start `ClinicalTrials.Api`
+5. start `ClinicalTrials.Mcp`
 
 ## Tool Contract
 
 ### `get_study_by_nct_id`
 
-Fetches a ClinicalTrials.gov study by NCT identifier.
+Fetches a study by NCT identifier through the configured study service.
 
 Input:
 
-- `nctId` (`string`): ClinicalTrials.gov NCT ID such as `NCT04924608`
+- `nctId` (`string`): NCT ID such as `NCT04924608`
 
 Success behavior:
 
 - trims leading and trailing whitespace
-- calls the shared ClinicalTrials.gov proxy service
-- returns a clean summary in the visible tool content
+- calls the configured study service
+- returns a clean summary in visible tool content
 - returns the upstream study payload as structured JSON
+- caches successful responses
+- caches `404` responses for a short negative-cache TTL
 
 Failure behavior:
 
@@ -60,6 +53,7 @@ Failure behavior:
 - study-service `404` and other non-2xx responses return structured tool errors with upstream status metadata
 - study-service connectivity failures return status `502`
 - study-service timeout returns status `504`
+- MCP endpoint rate-limit exhaustion returns HTTP `429`
 
 ## Connect A Workspace MCP Client
 
@@ -82,15 +76,16 @@ The repository includes a sample workspace configuration at `.vscode/mcp.json`:
 
 ## Quick Smoke Test
 
-1. Start the MCP server.
-2. Verify liveness and readiness:
+1. Start `ClinicalTrials.Api`.
+2. Start `ClinicalTrials.Mcp`.
+3. Verify liveness and readiness:
 
 ```powershell
 Invoke-WebRequest http://localhost:5011/health/live
 Invoke-WebRequest http://localhost:5011/health/ready
 ```
 
-3. In an MCP-capable client, invoke:
+4. In an MCP-capable client, invoke:
 
 ```text
 Use get_study_by_nct_id with nctId NCT04924608
@@ -101,5 +96,4 @@ Expected result:
 - the client sends `X-Api-Key: clinical-trials-local-dev-key`
 - the tool returns a readable summary in visible content
 - the tool returns the raw study JSON as structured content
-- errors are returned as MCP tool errors with status metadata
 - the request path used by MCP defaults to `http://localhost:5010/api/studies/{nctId}`

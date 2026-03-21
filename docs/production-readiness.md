@@ -14,7 +14,7 @@ Two supported runtime profiles are assumed:
   - no Azure dependency
   - local secrets from environment variables, user-secrets, or committed local-only dev config
   - local SQL Server-compatible database in later phases
-  - local Redis in later phases
+  - in-memory cache and in-memory rate limiting in later phases
   - local seeded dev API key flow
   - local console and debug telemetry only
 - `Production`
@@ -32,7 +32,7 @@ The service must stay runnable end-to-end on a developer machine without Azure K
 | --- | --- | --- | --- |
 | 0 | Current Baseline | Completed | MCP tool works in dev, stateless mode is enabled, docs and tests exist |
 | 1 | Security Foundation | Completed | API key auth, protected `/mcp`, split health endpoints, local dev key flow, and production-safe host defaults are in place |
-| 2 | Data Plane Hardening | Pending | SQL-backed client registry, hashed API keys, Redis-backed rate limiting and caching |
+| 2 | Data Plane Hardening | Completed | SQL-backed client registry, hashed API keys, local-memory and Redis-capable rate limiting/caching, admin CLI, and checked-in SQL scripts are in place |
 | 3 | Runtime Resilience | Pending | Upstream resilience, health/readiness, request limits, and failure handling |
 | 4 | Observability And Ops | Pending | App Insights, logs, metrics, alerts, and operational runbooks |
 | 5 | Deployment Platform | Pending | Terraform-managed Azure resources, containerization, App Service primary deployment, Container Apps compatibility |
@@ -86,19 +86,23 @@ Exit criteria:
 
 ### Phase 2: Data Plane Hardening
 
-**Status:** `Pending`
+**Status:** `Completed`
 
-Deliverables:
+Delivered:
 
 - create Azure SQL-backed client registry for known clients
+- create checked-in SQL scripts under `SQL/` for database creation and database seeding
+- do not implement database creation or seed execution in application startup code
 - store only API key hashes and metadata, never raw keys after issuance
 - model client status, key status, created, rotated, revoked timestamps, and usage policy
 - add admin-only operational flow for create, rotate, revoke, and deactivate
 - add Azure Redis-backed per-client and global rate limiting
 - add Redis-backed short TTL response caching for successful lookups
 - optionally add short negative-cache TTL for repeat `404` lookups
-- provide a documented local strategy for SQL and Redis dependencies
-- standardize local dependencies with Docker Compose
+- use the existing local SQL Server environment for local development
+- use in-memory cache and in-memory rate limiting for local development instead of local Redis
+- document the split between local in-memory behavior and production Redis-backed behavior
+- add an admin-only console flow for create client, issue key, rotate key, revoke key, and deactivate client
 
 Exit criteria:
 
@@ -106,7 +110,17 @@ Exit criteria:
 - revoked keys stop working immediately
 - per-client and global limits work across multiple instances
 - repeated successful lookups reduce upstream dependency calls
-- local development can still run end-to-end with local dependencies only
+- local development can still run end-to-end with local SQL plus in-memory cache/rate limiting only
+- required schema and seed data can be created from checked-in SQL scripts in `SQL/`
+
+Implementation notes:
+
+- client registry schema is delivered in `SQL/001_create_client_registry.sql`
+- local dev seed data is delivered in `SQL/002_seed_local_dev_client.sql`
+- runtime auth now validates hashed API keys against SQL
+- local development uses SQL Server plus in-memory cache and in-memory rate limiting
+- production configuration remains Redis-capable for cache and rate limiting
+- admin operations are implemented as a separate CLI project, not a public HTTP surface
 
 ### Phase 3: Runtime Resilience
 
@@ -207,9 +221,11 @@ Exit criteria:
   - `/health/ready` remains public
 - Phase 2:
   - SQL-backed key lookup works
+  - checked-in SQL scripts create the required schema and seed data
   - hashed keys validate correctly
   - per-client and global rate limits return `429`
   - Redis cache reduces duplicate upstream calls
+  - local profile works with in-memory cache and in-memory rate limiting
 - Phase 3:
   - timeout, retry, and circuit-breaker policies behave as configured
   - `/health/ready` fails when SQL, Redis, or secrets are unavailable
@@ -235,6 +251,8 @@ Exit criteria:
 - API keys are the chosen v1 auth model for known clients
 - Azure SQL is the future system of record for client and key metadata
 - Azure Redis is the future backing store for cross-instance rate limiting and caching
+- local development will use the existing local SQL Server environment and will not require local Redis
+- database creation and seeding will be delivered as checked-in SQL scripts under `SQL/`, not as startup code or auto-migrations
 - Terraform and Azure DevOps pipelines are in scope
 - production go-live is gated on completion of phases 2 through 6
 - the MCP server must remain runnable locally throughout the hardening effort
@@ -247,7 +265,8 @@ The main concern is not authentication itself. The real risk is accidentally cou
 To avoid that:
 
 - local developers must always have a documented way to obtain or seed a dev API key
-- local execution must support future SQL and Redis dependencies through local setup, not Azure
+- local execution must support the future SQL dependency through local setup, not Azure
+- local execution must use in-memory cache and rate limiting instead of requiring local Redis
 - secret resolution must support local configuration in addition to production secret stores
 - Key Vault must remain production-only
 - Azure Monitor and Application Insights must remain production-only

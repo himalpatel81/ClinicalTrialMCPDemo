@@ -73,10 +73,11 @@ public sealed class McpHostIntegrationTests
 
         var configuration = new Dictionary<string, string?>
         {
-            ["Authentication:ApiKeys:Clients:0:Enabled"] = "false"
+            ["ConnectionStrings:ClientRegistry"] = "Server=integration;Database=ClinicalTrialsMcp;User Id=test;Password=test;"
         };
+        var registryStore = TestClientRegistryStore.CreateDefault(TestWebApplicationFactory<StudiesMcpTools>.DefaultApiKey, clientIsActive: false);
 
-        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler, configuration);
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler, configuration, registryStore);
         using var client = factory.CreateAuthenticatedClient();
         using var content = new StringContent("{}", Encoding.UTF8, "application/json");
 
@@ -128,5 +129,34 @@ public sealed class McpHostIntegrationTests
         Assert.True(result.StructuredContent.HasValue);
         Assert.Equal("NCT04924608", result.StructuredContent.Value.GetProperty("nctId").GetString());
         Assert.Equal("Study title", result.StructuredContent.Value.GetProperty("briefTitle").GetString());
+    }
+
+    [Fact]
+    public async Task McpEndpoint_ReturnsTooManyRequests_WhenPerClientRateLimitIsExceeded()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608","briefTitle":"Study title"}""")));
+
+        var configuration = new Dictionary<string, string?>
+        {
+            ["RateLimiting:PerClientPermitLimit"] = "1",
+            ["RateLimiting:GlobalPermitLimit"] = "10",
+            ["RateLimiting:WindowSeconds"] = "60"
+        };
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler, configuration);
+        using var client = factory.CreateAuthenticatedClient();
+
+        using var firstContent = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var secondContent = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        var firstResponse = await client.PostAsync("/mcp", firstContent);
+        var secondResponse = await client.PostAsync("/mcp", secondContent);
+
+        Assert.NotEqual(HttpStatusCode.TooManyRequests, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, secondResponse.StatusCode);
     }
 }

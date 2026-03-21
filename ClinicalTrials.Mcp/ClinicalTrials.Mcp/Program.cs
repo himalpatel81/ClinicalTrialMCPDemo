@@ -1,13 +1,18 @@
 using ClinicalTrials.Mcp.Authentication;
+using ClinicalTrials.Mcp.Caching;
+using ClinicalTrials.Mcp.Data;
 using ClinicalTrials.Mcp.Health;
+using ClinicalTrials.Mcp.RateLimiting;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Mcp.Tools;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,14 +32,29 @@ builder.Services.AddOptions<ApiKeyAuthenticationSettings>()
     .Validate(
         settings => !string.IsNullOrWhiteSpace(settings.HeaderName),
         $"Configuration '{ApiKeyAuthenticationSettings.SectionName}:HeaderName' is required.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<ClientRegistryDatabaseSettings>()
+    .Configure<IConfiguration>((settings, configuration) =>
+    {
+        settings.ConnectionString = configuration.GetConnectionString("ClientRegistry") ?? string.Empty;
+    })
     .Validate(
-        settings => settings.Clients.Count > 0,
-        $"Configuration '{ApiKeyAuthenticationSettings.SectionName}:Clients' must contain at least one API key client.")
-    .Validate(
-        settings => settings.Clients.All(client =>
-            !string.IsNullOrWhiteSpace(client.ClientId)
-            && !string.IsNullOrWhiteSpace(client.ApiKey)),
-        $"Each configured API key client in '{ApiKeyAuthenticationSettings.SectionName}:Clients' must include non-empty ClientId and ApiKey values.")
+        settings => !string.IsNullOrWhiteSpace(settings.ConnectionString),
+        "Configuration 'ConnectionStrings:ClientRegistry' is required.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<StudyLookupCacheSettings>()
+    .BindConfiguration(StudyLookupCacheSettings.SectionName)
+    .Validate(settings => settings.SuccessTtlSeconds > 0, $"Configuration '{StudyLookupCacheSettings.SectionName}:SuccessTtlSeconds' must be greater than zero.")
+    .Validate(settings => settings.NotFoundTtlSeconds >= 0, $"Configuration '{StudyLookupCacheSettings.SectionName}:NotFoundTtlSeconds' must be zero or greater.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<McpRateLimitingSettings>()
+    .BindConfiguration(McpRateLimitingSettings.SectionName)
+    .Validate(settings => settings.WindowSeconds > 0, $"Configuration '{McpRateLimitingSettings.SectionName}:WindowSeconds' must be greater than zero.")
+    .Validate(settings => settings.PerClientPermitLimit > 0, $"Configuration '{McpRateLimitingSettings.SectionName}:PerClientPermitLimit' must be greater than zero.")
+    .Validate(settings => settings.GlobalPermitLimit > 0, $"Configuration '{McpRateLimitingSettings.SectionName}:GlobalPermitLimit' must be greater than zero.")
     .ValidateOnStart();
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -43,6 +63,23 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
         | ForwardedHeaders.XForwardedProto
         | ForwardedHeaders.XForwardedHost;
 });
+
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddMemoryCache();
+
+var cacheProvider = builder.Configuration.GetValue<CacheProvider>($"{StudyLookupCacheSettings.SectionName}:Provider");
+var rateLimitProvider = builder.Configuration.GetValue<RateLimitProvider>($"{McpRateLimitingSettings.SectionName}:Provider");
+if (cacheProvider == CacheProvider.Redis || rateLimitProvider == RateLimitProvider.Redis)
+{
+    var redisConnectionString = builder.Configuration.GetConnectionString("Redis")
+        ?? throw new InvalidOperationException("Configuration 'ConnectionStrings:Redis' is required when a Redis-backed provider is enabled.");
+
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = redisConnectionString;
+    });
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConnectionString));
+}
 
 builder.Services.AddAuthentication(ApiKeyAuthenticationDefaults.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
@@ -55,6 +92,7 @@ builder.Services.AddAuthorizationBuilder()
         policy.AddAuthenticationSchemes(ApiKeyAuthenticationDefaults.SchemeName);
         policy.RequireAuthenticatedUser();
         policy.RequireClaim(ApiKeyAuthenticationDefaults.ClientActiveClaimType, bool.TrueString);
+        policy.RequireClaim(ApiKeyAuthenticationDefaults.ApiKeyActiveClaimType, bool.TrueString);
     });
 
 builder.Services.AddHealthChecks()
@@ -62,12 +100,33 @@ builder.Services.AddHealthChecks()
         "mcp_configuration",
         tags: ["ready"]);
 
+builder.Services.AddScoped<IClientRegistryStore, SqlClientRegistryStore>();
+
+if (cacheProvider == CacheProvider.Redis)
+{
+    builder.Services.AddScoped<IStudyLookupCacheStore, DistributedStudyLookupCacheStore>();
+}
+else
+{
+    builder.Services.AddScoped<IStudyLookupCacheStore, MemoryStudyLookupCacheStore>();
+}
+
+if (rateLimitProvider == RateLimitProvider.Redis)
+{
+    builder.Services.AddSingleton<IMcpRateLimitStore, RedisMcpRateLimitStore>();
+}
+else
+{
+    builder.Services.AddSingleton<IMcpRateLimitStore, MemoryMcpRateLimitStore>();
+}
+
 builder.Services.AddHttpClient(StudyServiceHttpClient.ClientName, (services, client) =>
 {
     var settings = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StudyServiceSettings>>().Value;
     client.BaseAddress = new Uri(settings.BaseUrl);
 });
-builder.Services.AddScoped<IStudyLookupEndpointClient, StudyServiceHttpClient>();
+builder.Services.AddScoped<StudyServiceHttpClient>();
+builder.Services.AddScoped<IStudyLookupEndpointClient, CachedStudyLookupEndpointClient>();
 
 builder.Services.AddMcpServer()
     .WithHttpTransport(options =>
@@ -84,6 +143,9 @@ if (app.Configuration.GetValue<bool>("Hosting:ForwardedHeaders:Enabled"))
 }
 
 app.UseAuthentication();
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/mcp", StringComparison.OrdinalIgnoreCase),
+    branch => branch.UseMiddleware<McpRateLimitingMiddleware>());
 app.UseAuthorization();
 
 app.MapGet("/health/live", () => Results.Ok("healthy"))

@@ -4,387 +4,252 @@
 
 This document describes the technical design and implementation of the HTTP MCP server in this repository.
 
-The MCP server exposes the existing ClinicalTrials.gov study lookup capability through MCP while preserving alignment with the REST API already exposed by `ClinicalTrials.Api`.
-
 ## Solution Overview
 
-The implementation is split into three application layers:
+The implementation is split into four application layers:
 
 1. `ClinicalTrials.Api`
-   - existing ASP.NET Core REST API
+   - REST API host
    - exposes `GET /api/studies/{nctId}`
+   - calls ClinicalTrials.gov through the shared lookup service
 2. `ClinicalTrials.Mcp`
-   - ASP.NET Core HTTP MCP host
+   - HTTP MCP host
    - exposes `/mcp`, `/health/live`, and `/health/ready`
-   - registers MCP tools through the official C# MCP SDK
-   - calls a configurable study service over HTTP
-3. `ClinicalTrials.Shared`
-   - shared lookup abstraction and implementation
-   - encapsulates the ClinicalTrials.gov upstream call
-   - used by `ClinicalTrials.Api`
+   - authenticates with a SQL-backed client registry
+   - rate limits and caches study lookups
+3. `ClinicalTrials.Admin`
+   - console CLI for client and API key lifecycle
+   - no public HTTP admin surface
+4. `ClinicalTrials.Shared`
+   - shared ClinicalTrials.gov lookup service used by the REST API
 
-This separation keeps transport concerns isolated while ensuring the study lookup operation is implemented once.
+The runtime flow is:
+
+1. MCP client calls `ClinicalTrials.Mcp`
+2. `ClinicalTrials.Mcp` authenticates the caller against SQL Server
+3. `ClinicalTrials.Mcp` rate limits the request
+4. `ClinicalTrials.Mcp` checks its study lookup cache
+5. cache miss calls `ClinicalTrials.Api`
+6. `ClinicalTrials.Api` calls ClinicalTrials.gov
 
 ## Technology Stack
 
 - .NET `net10.0`
 - ASP.NET Core
 - `ModelContextProtocol.AspNetCore` `1.1.0`
-- `Microsoft.Extensions.Http`
-- ASP.NET Core authentication and authorization
-- xUnit for automated tests
+- `Microsoft.Data.SqlClient`
+- `StackExchange.Redis`
+- `Microsoft.Extensions.Caching.StackExchangeRedis`
+- xUnit
 
-## Host Architecture
+## MCP Host Architecture
 
-### MCP Host Responsibilities
+### Core Responsibilities
 
 - host MCP over stateless streamable HTTP
-- discover and register MCP tools from assembly
-- protect `/mcp` with API key authentication
+- protect `/mcp` with SQL-backed API key authentication
 - expose anonymous liveness and readiness endpoints
-- call a configurable external study service
-- preserve a local, non-Azure development path
+- call a configurable study service over HTTP
+- cache lookup responses
+- enforce per-client and global rate limits
+- preserve a non-Azure local runtime path
 
 ### Key Startup Behavior
 
-`ClinicalTrials.Mcp/ClinicalTrials.Mcp/Program.cs` now:
+[Program.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Program.cs) now:
 
-- validates API key configuration on startup
-- registers the `ApiKey` authentication scheme
-- registers an authorization policy that requires `clinicaltrials.client_active = True`
-- conditionally enables forwarded headers when `Hosting:ForwardedHeaders:Enabled` is true
-- registers a readiness health check
-- configures MCP using:
-  - `AddMcpServer()`
-  - `WithHttpTransport(options => options.Stateless = true)`
-  - `WithToolsFromAssembly(...)`
+- validates study service settings
+- validates API key header settings
+- validates client registry connection string presence
+- validates cache and rate-limit settings
+- registers SQL-backed `IClientRegistryStore`
+- registers memory or Redis cache based on configuration
+- registers memory or Redis rate-limit storage based on configuration
+- registers the `ApiKey` auth scheme and active-key policy
+- registers the study lookup HTTP client and caching decorator
 - maps:
   - `GET /health/live`
   - `GET /health/ready`
-  - `POST/GET /mcp` via `MapMcp("/mcp").RequireAuthorization(...)`
-
-The old permissive CORS policy has been removed from the default host pipeline.
-
-## Lookup Routing
-
-The MCP host no longer calls ClinicalTrials.gov directly.
-
-It now depends on `IStudyLookupEndpointClient`, implemented by `StudyServiceHttpClient`, which calls a configurable upstream study service.
-
-Current local default:
-
-- base URL: `http://localhost:5010/`
-- path template: `api/studies/{nctId}`
-
-That means the runtime flow is:
-
-1. MCP client calls `ClinicalTrials.Mcp`
-2. `ClinicalTrials.Mcp` calls `ClinicalTrials.Api`
-3. `ClinicalTrials.Api` calls ClinicalTrials.gov
-
-This keeps the MCP host independent from the direct ClinicalTrials.gov integration and reduces future disruption if the REST service is replaced by another compatible study service.
+  - `POST/GET /mcp`
 
 ## Authentication Design
 
-### Scheme
+### Header
 
-- scheme name: `ApiKey`
 - request header: `X-Api-Key`
 
-### Current Key Source
+### Registry Backing Store
 
-Phase 1 uses configuration-backed client keys.
+Authentication no longer uses config-backed raw keys.
 
-Local development is seeded through `appsettings.Development.json`:
+It now uses:
 
-- client ID: `local-dev-client`
-- API key: `clinical-trials-local-dev-key`
-- study service base URL: `http://localhost:5010/`
+- [SqlClientRegistryStore.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Data/SqlClientRegistryStore.cs)
+- SQL schema in [001_create_client_registry.sql](/e:/GitHimal/ClinicalTrialMCPDemo/SQL/001_create_client_registry.sql)
+- local seed in [002_seed_local_dev_client.sql](/e:/GitHimal/ClinicalTrialMCPDemo/SQL/002_seed_local_dev_client.sql)
 
-Non-local environments should override keys through environment variables, user-secrets, or a managed secret store.
+### Hashing
 
-### Auth Behavior
+Raw API keys are never stored in the database.
 
-- missing API key header -> `401 Unauthorized`
-- invalid API key -> `401 Unauthorized`
-- configured but disabled client -> authenticated, then rejected by policy with `403 Forbidden`
-- active configured client -> authorized to access `/mcp`
+[ApiKeyProtector.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Authentication/ApiKeyProtector.cs) uses:
 
-### Claims
+- PBKDF2-SHA512
+- random 32-byte salt
+- 120,000 iterations
+- deterministic lookup prefix
 
-Successful authentication emits:
+The auth flow is:
 
-- `ClaimTypes.NameIdentifier`
-- `ClaimTypes.Name`
-- `clinicaltrials.client_id`
-- `clinicaltrials.client_active`
+1. compute a lookup prefix from the supplied raw key
+2. load candidate keys from SQL by prefix
+3. verify the supplied raw key against the stored salted hash
+4. emit claims for:
+   - client code
+   - client active status
+   - API key active status
+   - optional permit-limit override
 
-## Health Endpoints
+### Authorization
 
-### `/health/live`
+The MCP authorization policy now requires:
 
-- confirms the process is running
-- does not test upstream reachability
+- authenticated user
+- `clinicaltrials.client_active = True`
+- `clinicaltrials.api_key_active = True`
 
-### `/health/ready`
+Invalid keys return `401`.
+Inactive or revoked clients or keys return `403`.
 
-- confirms required startup configuration is present for the current phase
-- currently validates MCP host configuration readiness, not REST API reachability or future SQL/Redis connectivity
+## Data Model
 
-## REST API Shared Service Design
+The client registry schema uses two tables:
 
-### Contract
+- `dbo.McpClients`
+- `dbo.McpClientApiKeys`
 
-The shared contract is:
+Modeled fields include:
 
-- `IStudyLookupService`
+- client code
+- display name
+- active/inactive status
+- created and updated timestamps
+- deactivated timestamp
+- per-client permit-limit override
+- API key label
+- key prefix
+- key hash material
+- key active/inactive status
+- created timestamp
+- revoked timestamp
+- expiration timestamp
+- replacement key linkage
 
-Method:
+## Admin Operations
 
-```csharp
-Task<StudyLookupResult> GetStudyAsync(string nctId, CancellationToken cancellationToken)
-```
+Admin operations are implemented by:
 
-### Result Model
+- [ClientRegistryAdminService.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Administration/ClientRegistryAdminService.cs)
+- [ClinicalTrials.Admin.csproj](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Admin/ClinicalTrials.Admin/ClinicalTrials.Admin.csproj)
 
-`StudyLookupResult` carries enough information for both transports to interpret the lookup outcome:
+Supported CLI operations:
 
-- `StatusCode`
-- `ContentType`
-- `Body`
-- `FailureKind`
-- `Exception`
+- create client
+- issue API key
+- rotate API key
+- revoke API key
+- deactivate client
 
-### Failure Classification
+This keeps admin operations out of the public MCP host.
 
-`StudyLookupFailureKind` currently supports:
+## Study Service Routing
 
-- `None`
-- `RequestFailed`
-- `TimedOut`
+The MCP host depends on:
 
-## MCP Study Service Client Design
+- [IStudyLookupEndpointClient.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Services/IStudyLookupEndpointClient.cs)
+- [StudyServiceHttpClient.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Services/StudyServiceHttpClient.cs)
 
-### Contract
+Current local default:
 
-The MCP host uses:
+- `StudyService:BaseUrl = http://localhost:5010/`
+- `StudyService:StudyLookupPathTemplate = api/studies/{nctId}`
 
-- `IStudyLookupEndpointClient`
+This keeps the MCP host independent from the direct ClinicalTrials.gov integration and makes future replacement of `ClinicalTrials.Api` a lower-disruption change.
 
-Method:
+## Caching Design
 
-```csharp
-Task<StudyLookupResult> GetStudyAsync(string nctId, CancellationToken cancellationToken)
-```
+Caching is implemented by:
 
-### Current HTTP Implementation
+- [CachedStudyLookupEndpointClient.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Caching/CachedStudyLookupEndpointClient.cs)
+- [MemoryStudyLookupCacheStore.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Caching/MemoryStudyLookupCacheStore.cs)
+- [DistributedStudyLookupCacheStore.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Caching/DistributedStudyLookupCacheStore.cs)
 
-`StudyServiceHttpClient`:
+Behavior:
 
-- uses named `HttpClient` `StudyService`
-- reads `StudyService:BaseUrl`
-- reads `StudyService:StudyLookupPathTemplate`
-- replaces `{nctId}` in the configured path template
-- forwards response status, content type, and body
-- maps `HttpRequestException` to `RequestFailed`
-- maps non-caller-cancel `TaskCanceledException` to `TimedOut`
+- cache successful `2xx` lookups
+- cache `404` lookups when negative caching is enabled
+- do not cache request failures or timeouts
 
-## Upstream Request Behavior
+Providers:
 
-The REST API shared service:
+- local: memory
+- production: Redis
 
-- creates the named `HttpClient` `ClinicalTrialsGov`
-- builds the path `api/v2/studies/{Uri.EscapeDataString(nctId)}`
-- performs a `GET`
-- reads the upstream body as string
-- preserves upstream status code and content type
-- maps `HttpRequestException` to `RequestFailed`
-- maps non-caller-cancel `TaskCanceledException` to `TimedOut`
+## Rate Limiting Design
 
-## Configuration
+Rate limiting is implemented by:
 
-### Required Active Configuration
+- [McpRateLimitingMiddleware.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/RateLimiting/McpRateLimitingMiddleware.cs)
+- [MemoryMcpRateLimitStore.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/RateLimiting/MemoryMcpRateLimitStore.cs)
+- [RedisMcpRateLimitStore.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/RateLimiting/RedisMcpRateLimitStore.cs)
 
-The MCP host requires:
+Behavior:
 
-```json
-{
-  "StudyService": {
-    "BaseUrl": "http://localhost:5010/",
-    "StudyLookupPathTemplate": "api/studies/{nctId}"
-  },
-  "Authentication": {
-    "ApiKeys": {
-      "HeaderName": "X-Api-Key",
-      "Clients": [
-        {
-          "ClientId": "local-dev-client",
-          "ApiKey": "clinical-trials-local-dev-key",
-          "Enabled": true
-        }
-      ]
-    }
-  }
-}
-```
+- global fixed-window rate limit
+- per-client fixed-window rate limit
+- optional per-client permit-limit override from SQL
+- HTTP `429` on limit exhaustion
 
-Startup fails if required auth or study-service configuration is missing.
+Providers:
 
-### Production-Oriented Host Defaults
+- local: memory
+- production: Redis
 
-- `AllowedHosts` defaults to local addresses only
-- forwarded headers are opt-in through `Hosting:ForwardedHeaders:Enabled`
-- no permissive CORS policy is applied by default
+## Local Development Profile
 
-### Future Configuration Contracts
+Local development now uses:
 
-The MCP appsettings file now includes placeholder configuration sections for later phases:
-
-- `ConnectionStrings:ClientRegistry`
-- `ConnectionStrings:Redis`
-- `Secrets:Provider`
-- `Telemetry:ApplicationInsights:ConnectionString`
-- `RateLimiting:*`
-
-These are scaffolding for later production phases and are not active yet.
-
-## Transport Mode
-
-The MCP host is configured for stateless streamable HTTP mode.
-
-Implications:
-
-- the server does not issue or depend on `MCP-Session-Id`
-- requests are independent
-- server restarts do not create stale session problems for this tool
-- server-to-client features that depend on stateful sessions are unavailable
-
-## MCP Tool Design
-
-### Registered Tool
-
-- `get_study_by_nct_id`
-
-Declared characteristics:
-
-- `ReadOnly = true`
-- `Idempotent = true`
-- `Destructive = false`
-- `OpenWorld = true`
-- `UseStructuredContent = true`
-
-### Input
-
-- `nctId: string`
-
-Validation:
-
-- trims whitespace
-- rejects null, empty, and whitespace-only values
-- does not enforce stricter NCT formatting in v1
-
-### Success Result
-
-On upstream `2xx`:
-
-- `IsError = false`
-- `Content` contains a human-readable summary
-- `StructuredContent` contains the raw upstream JSON payload
-
-### Error Result
-
-On failure:
-
-- `IsError = true`
-- `Content` contains readable error text
-- `StructuredContent` contains structured error metadata
-
-Current mappings:
-
-- invalid input -> `400`
-- upstream connectivity failure -> `502`
-- upstream timeout -> `504`
-- upstream non-2xx -> original upstream status code
-- unexpected missing status code -> `500`
-
-## Request Flow
-
-### Successful Tool Call
-
-1. client sends `X-Api-Key` and calls `/mcp`
-2. authentication and authorization succeed
-3. MCP runtime dispatches `get_study_by_nct_id`
-4. tool trims and validates `nctId`
-5. tool calls `IStudyLookupEndpointClient.GetStudyAsync`
-6. MCP HTTP client calls the configured study service endpoint
-7. the study service returns a response from its own backing system
-8. tool converts the response to summary content plus structured JSON
-9. MCP host returns `CallToolResult`
-
-### Failed Auth Call
-
-1. client calls `/mcp` without a valid `X-Api-Key`
-2. authentication fails or authorization rejects the client
-3. tool execution does not start
-4. ASP.NET Core returns `401` or `403`
+- SQL Server for the client registry
+- in-memory cache
+- in-memory rate limiting
+- seeded dev key `clinical-trials-local-dev-key`
+- no local Redis requirement
 
 ## Testing Strategy
 
-Automated coverage includes:
+The current test suite covers:
 
-- shared service pass-through and failure mapping
-- REST API integration behavior
-- MCP tool success and failure behavior
-- MCP study-service client path construction and failure mapping
-- MCP host liveness and readiness endpoints
-- unauthenticated `/mcp` rejection
-- disabled client `/mcp` rejection
-- authenticated MCP tool discovery and invocation
+- API key hashing and verification
+- cached study lookup behavior
+- study service client path construction
+- admin service client and key lifecycle logic
+- authenticated MCP access
+- inactive client rejection
+- per-client rate limiting
+- MCP tool discovery and invocation
 
-The current test suite passes with 19 tests.
+The current suite passes with 32 tests.
 
-## Workspace Client Configuration
+## Current Technical Limits
 
-A sample workspace configuration is provided at `.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "clinical-trials-mcp": {
-      "type": "http",
-      "url": "http://localhost:5011/mcp",
-      "headers": {
-        "X-Api-Key": "clinical-trials-local-dev-key"
-      }
-    }
-  },
-  "inputs": []
-}
-```
-
-## Current Technical Limitations
-
-- only one MCP tool is implemented
-- phase 1 still uses configuration-backed API keys rather than a database-backed registry
-- MCP depends on a separately running study service
-- no rate limiting yet
-- no structured request correlation yet
-- no SQL or Redis dependency checks yet
-- no deployment packaging or infrastructure automation yet
+- readiness still validates configuration, not live SQL or study-service connectivity
+- no upstream HTTP resilience policies yet
+- no structured correlation or audit logging yet
+- no deployment automation yet
 
 ## Recommended Next Technical Steps
 
-1. Replace configuration-backed API keys with a SQL-backed registry and hashed secrets.
-2. Add rate limiting and cache infrastructure.
-3. Add structured request correlation and audit logging.
-4. Extend readiness checks for future SQL and Redis dependencies.
-5. Add deployment packaging and infrastructure automation.
-
-## Source References
-
-- `ClinicalTrials.Mcp/ClinicalTrials.Mcp/Program.cs`
-- `ClinicalTrials.Mcp/ClinicalTrials.Mcp/Authentication`
-- `ClinicalTrials.Mcp/ClinicalTrials.Mcp/Health`
-- `ClinicalTrials.Mcp/ClinicalTrials.Mcp/Tools/StudiesMcpTools.cs`
-- `ClinicalTrials.Shared/ClinicalTrials.Shared`
-- `ClinicalTrials.Tests/ClinicalTrials.Tests`
+1. Add upstream resilience policies and deeper readiness checks.
+2. Add structured correlation and audit logging.
+3. Add production telemetry and alerting.
+4. Add deployment automation and platform assets.

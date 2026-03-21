@@ -1,4 +1,7 @@
 using ClinicalTrials.Mcp.Authentication;
+using ClinicalTrials.Mcp.Caching;
+using ClinicalTrials.Mcp.Data;
+using ClinicalTrials.Mcp.RateLimiting;
 using ClinicalTrials.Mcp.Services;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
@@ -7,7 +10,11 @@ namespace ClinicalTrials.Mcp.Health;
 
 internal sealed class McpConfigurationHealthCheck(
     IOptions<ApiKeyAuthenticationSettings> apiKeySettings,
-    IOptions<StudyServiceSettings> studyServiceSettings)
+    IOptions<StudyServiceSettings> studyServiceSettings,
+    IOptions<ClientRegistryDatabaseSettings> clientRegistrySettings,
+    IOptions<StudyLookupCacheSettings> cacheSettings,
+    IOptions<McpRateLimitingSettings> rateLimitingSettings,
+    IConfiguration configuration)
     : IHealthCheck
 {
     public Task<HealthCheckResult> CheckHealthAsync(
@@ -34,9 +41,21 @@ internal sealed class McpConfigurationHealthCheck(
             failures.Add("Authentication:ApiKeys:HeaderName is missing.");
         }
 
-        if (settings.Clients.Count == 0)
+        if (string.IsNullOrWhiteSpace(clientRegistrySettings.Value.ConnectionString))
         {
-            failures.Add("Authentication:ApiKeys:Clients must contain at least one configured client.");
+            failures.Add("ConnectionStrings:ClientRegistry is missing.");
+        }
+
+        if (cacheSettings.Value.Provider == CacheProvider.Redis &&
+            string.IsNullOrWhiteSpace(configuration.GetConnectionString("Redis")))
+        {
+            failures.Add("ConnectionStrings:Redis is required when Caching:Provider is Redis.");
+        }
+
+        if (rateLimitingSettings.Value.Provider == RateLimitProvider.Redis &&
+            string.IsNullOrWhiteSpace(configuration.GetConnectionString("Redis")))
+        {
+            failures.Add("ConnectionStrings:Redis is required when RateLimiting:Provider is Redis.");
         }
 
         return Task.FromResult(

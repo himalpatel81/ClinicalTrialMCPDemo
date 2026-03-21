@@ -1,16 +1,16 @@
 using System.Net;
+using System.Text;
 using ClinicalTrials.Mcp.Tools;
 using ClinicalTrials.Tests.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
 
 namespace ClinicalTrials.Tests;
 
 public sealed class McpHostIntegrationTests
 {
     [Fact]
-    public async Task HealthEndpoint_ReturnsOk()
+    public async Task LiveHealthEndpoint_ReturnsOk()
     {
         var handler = new TestHttpMessageHandler((_, _) =>
             Task.FromResult(
@@ -21,10 +21,68 @@ public sealed class McpHostIntegrationTests
         await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler);
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/health");
+        var response = await client.GetAsync("/health/live");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("\"healthy\"", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task ReadyHealthEndpoint_ReturnsOk()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608"}""")));
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task McpEndpoint_RejectsUnauthenticatedRequests()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608"}""")));
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler);
+        using var client = factory.CreateClient();
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/mcp", content);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task McpEndpoint_ReturnsForbidden_ForDisabledClient()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608"}""")));
+
+        var configuration = new Dictionary<string, string?>
+        {
+            ["Authentication:ApiKeys:Clients:0:Enabled"] = "false"
+        };
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler, configuration);
+        using var client = factory.CreateAuthenticatedClient();
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/mcp", content);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]
@@ -37,7 +95,7 @@ public sealed class McpHostIntegrationTests
                     """{"nctId":"NCT04924608","briefTitle":"Study title"}""")));
 
         await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler);
-        using var httpClient = factory.CreateClient();
+        using var httpClient = factory.CreateAuthenticatedClient();
         await using var transport = new HttpClientTransport(
             new HttpClientTransportOptions
             {

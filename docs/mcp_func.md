@@ -10,33 +10,33 @@ The MCP server allows an MCP-capable client to retrieve a ClinicalTrials.gov stu
 
 The server provides:
 
+- one protected MCP tool endpoint
 - one MCP tool for study lookup
-- one HTTP health endpoint for runtime verification
+- two HTTP health endpoints for runtime verification
 
 Current scope:
 
 - retrieve one study by NCT ID
-- return the raw ClinicalTrials.gov study payload on success
+- return a readable summary plus raw ClinicalTrials.gov study payload on success
 - return structured error information on failure
+- route the lookup through the configured study service rather than calling ClinicalTrials.gov directly
 
 Out of scope:
 
 - search across studies
 - list studies
 - create or modify data
-- summarize or transform the payload into a custom business shape
+- reshape the payload into a custom business DTO
 
 ## Supported User Capability
 
-### Capability
-
 A user can ask an MCP-capable assistant or client to fetch a study by its ClinicalTrials.gov NCT identifier.
 
-Example user intent:
+Example intents:
 
-- "Get study NCT04924608"
-- "Look up trial NCT04924608"
-- "Fetch the ClinicalTrials.gov record for NCT04924608"
+- `Get study NCT04924608`
+- `Look up trial NCT04924608`
+- `Fetch the ClinicalTrials.gov record for NCT04924608`
 
 ## Available MCP Tool
 
@@ -56,20 +56,12 @@ Example:
 NCT04924608
 ```
 
-Expected usage:
-
-- the client invokes the tool with an `nctId`
-- the tool contacts ClinicalTrials.gov through the shared service
-- the result is returned to the client
-
 ## Functional Inputs
 
 ### Accepted Input
 
-The tool accepts:
-
-- a non-empty string
-- leading/trailing spaces are allowed and removed before processing
+- non-empty string
+- leading and trailing spaces are removed before processing
 
 Examples accepted:
 
@@ -77,8 +69,6 @@ Examples accepted:
 - ` NCT04924608 `
 
 ### Rejected Input
-
-The tool rejects:
 
 - empty string
 - whitespace-only string
@@ -92,27 +82,24 @@ Examples rejected:
 
 ### Success Output
 
-When the study exists and ClinicalTrials.gov responds successfully:
+When ClinicalTrials.gov returns success:
 
-- the tool returns a success result
 - `IsError` is `false`
-- a clean human-readable summary is included
-- the full study payload is returned as structured JSON
+- the visible tool output contains a readable summary
+- the raw study payload is returned as structured JSON
 
 Functional expectation:
 
-- the client can show a readable summary in the UI
-- the client can inspect the raw study data directly
-- no important study fields are removed by this server
+- the client can show useful text in the UI
+- the client can still inspect the full raw study data
 
 ### Failure Output
 
 When the request cannot be completed:
 
-- the tool returns an error result
 - `IsError` is `true`
-- a readable error message is included
-- structured error metadata is included
+- the visible tool output contains a readable error message
+- structured error metadata is returned
 
 Error metadata contains:
 
@@ -120,6 +107,58 @@ Error metadata contains:
 - `title`
 - `detail`
 - optional `upstreamBody`
+
+## Functional Access Rules
+
+### Rule 1: Authenticated MCP Access
+
+The MCP endpoint requires an API key.
+
+Functional meaning:
+
+- clients must send `X-Api-Key`
+- local development uses `clinical-trials-local-dev-key`
+- missing or invalid keys are rejected before tool execution
+- disabled clients are rejected even if the key value matches configuration
+
+### Rule 2: Indirect Upstream Access
+
+The MCP server does not call ClinicalTrials.gov directly.
+
+Functional meaning:
+
+- MCP calls the configured study service
+- local development defaults that study service to `ClinicalTrials.Api`
+- future replacement of `ClinicalTrials.Api` should require only configuration or client-implementation changes
+
+### Rule 3: Read-Only Behavior
+
+The tool is read-only.
+
+Functional meaning:
+
+- it does not modify local data
+- it does not modify ClinicalTrials.gov data
+- repeated calls are safe from a mutation perspective
+
+### Rule 4: Raw Payload Preservation
+
+The tool preserves the upstream study payload in structured content.
+
+Functional meaning:
+
+- downstream consumers can use the source JSON directly
+- the server does not impose a custom DTO
+
+### Rule 5: Structured Error Reporting
+
+Failures are returned as structured tool errors instead of plain text only.
+
+Functional meaning:
+
+- clients can branch on `statusCode`
+- users can see readable failure information
+- models can potentially self-correct
 
 ## Functional Scenarios
 
@@ -129,16 +168,10 @@ Input:
 
 - `nctId = NCT04924608`
 
-Behavior:
-
-- tool validates the input
-- tool calls ClinicalTrials.gov
-- upstream returns study JSON
-- tool returns success
-
 Expected outcome:
 
-- user receives the study payload as structured JSON
+- the authenticated client receives summary content and raw study JSON
+- the lookup is sent through the configured study service
 
 ### Scenario 2: Input Contains Extra Spaces
 
@@ -146,14 +179,10 @@ Input:
 
 - `nctId = " NCT04924608 "`
 
-Behavior:
-
-- tool trims spaces
-- continues with the cleaned value
-
 Expected outcome:
 
-- same result as using `NCT04924608`
+- spaces are trimmed
+- the same study result is returned
 
 ### Scenario 3: Empty Input
 
@@ -161,104 +190,62 @@ Input:
 
 - `nctId = ""`
 
-Behavior:
+Expected outcome:
 
-- tool stops before calling upstream
-- returns validation error
+- tool returns `400`
+- title is `Invalid NCT ID`
+
+### Scenario 4: Missing API Key
 
 Expected outcome:
 
-- error status code `400`
-- title `Invalid NCT ID`
+- request is rejected before tool execution
+- HTTP status is `401`
 
-### Scenario 4: Study Not Found
-
-Input:
-
-- valid-looking NCT ID that ClinicalTrials.gov does not return
-
-Behavior:
-
-- tool calls ClinicalTrials.gov
-- upstream returns `404`
-- tool returns structured tool error
+### Scenario 5: Disabled Client
 
 Expected outcome:
 
-- error status code `404`
-- title `ClinicalTrials.gov returned an error`
-- detail explains the upstream status
+- request is rejected before tool execution
+- HTTP status is `403`
 
-### Scenario 5: Upstream Service Unreachable
-
-Behavior:
-
-- network call to ClinicalTrials.gov fails
+### Scenario 6: Study Not Found
 
 Expected outcome:
 
-- error status code `502`
-- title `ClinicalTrials.gov request failed`
+- tool returns structured `404`
 
-### Scenario 6: Upstream Timeout
-
-Behavior:
-
-- ClinicalTrials.gov does not respond in time
+### Scenario 7: Upstream Service Unreachable
 
 Expected outcome:
 
-- error status code `504`
-- title `ClinicalTrials.gov request timed out`
+- tool returns structured `502`
 
-## Functional Rules
+### Scenario 8: Upstream Timeout
 
-### Rule 1: Read-Only Behavior
+Expected outcome:
 
-The tool is read-only.
+- tool returns structured `504`
 
-Functional meaning:
+## Health Endpoints
 
-- it does not modify any local data
-- it does not modify any ClinicalTrials.gov data
-- repeated calls are safe from a data mutation perspective
-
-### Rule 2: Raw Payload Preservation
-
-The tool returns the upstream study payload without business reshaping.
-
-Functional meaning:
-
-- downstream consumers see the source study structure
-- the server does not produce a custom study DTO
-
-### Rule 3: Structured Error Reporting
-
-Failures are returned as structured tool errors instead of unstructured plain text.
-
-Functional meaning:
-
-- the user or client can understand what failed
-- automated clients can branch on `statusCode`
-- models can potentially self-correct with a new call
-
-## Health Endpoint
-
-### `GET /health`
+### `GET /health/live`
 
 Functional purpose:
 
-- confirm that the MCP host process is running and responding
+- confirm that the MCP host process is running
 
-What it does:
+### `GET /health/ready`
 
-- returns HTTP `200 OK`
-- returns `healthy`
+Functional purpose:
 
-What it does not confirm:
+- confirm that required startup configuration is present for the current phase
+
+What the health endpoints do not confirm:
 
 - that ClinicalTrials.gov is reachable
-- that the study lookup tool will succeed for a given NCT ID
+- that future SQL or Redis dependencies are available
+- that the configured study service is currently reachable
 
 ## Functional Relationship To REST API
 
@@ -274,9 +261,9 @@ MCP consumer:
 
 Shared functional behavior:
 
-- same upstream service
+- same study data ultimately returned by the REST API path
 - same study path lookup
-- same timeout/connectivity classification
+- same timeout and connectivity classification
 
 Different presentation:
 
@@ -288,20 +275,29 @@ Different presentation:
 Clients should expect:
 
 - one tool only in v1
+- API key authentication on `/mcp`
+- the configured study service to be available
 - raw JSON study output on success
+- readable summary content on success
 - structured status-driven error output on failure
-- local development HTTP endpoint at `http://localhost:5011/mcp`
+- local development endpoint at `http://localhost:5011/mcp`
 - stateless tool calls with no long-lived client session requirement
 
 Clients should not assume:
 
-- stable summary field names beyond the upstream payload
-- public internet availability
-- authentication support in the current version
+- search or list capabilities
+- stable summary wording beyond the current implementation
+- production internet availability
 
-## Example Functional Interaction
+## Example Local Authenticated Interaction
 
-Example prompt in an MCP-capable assistant:
+Required local header:
+
+```text
+X-Api-Key: clinical-trials-local-dev-key
+```
+
+Example prompt:
 
 ```text
 Use get_study_by_nct_id with nctId NCT04924608
@@ -309,18 +305,22 @@ Use get_study_by_nct_id with nctId NCT04924608
 
 Expected behavior:
 
-1. the assistant selects the MCP tool
-2. the tool is called with the supplied NCT ID
-3. the study is retrieved
-4. the assistant receives structured study JSON
+1. the client sends the local API key
+2. the assistant selects the MCP tool
+3. the tool is called with the supplied NCT ID
+4. MCP calls `ClinicalTrials.Api`
+5. the study is retrieved
+6. the assistant receives summary content plus structured study JSON
 
 ## Acceptance Criteria
 
 The implementation is functionally correct when all of the following are true:
 
 - the MCP host starts successfully
-- `/health` returns `200 OK`
-- `get_study_by_nct_id` is visible to an MCP client
+- `/health/live` returns `200 OK`
+- `/health/ready` returns `200 OK`
+- `/mcp` rejects missing or invalid API keys
+- `get_study_by_nct_id` is visible to an authenticated MCP client
 - valid NCT IDs return structured study JSON
 - whitespace-only input returns `400`
 - upstream not found returns structured `404`
@@ -330,13 +330,14 @@ The implementation is functionally correct when all of the following are true:
 ## Current Constraints
 
 - local/dev-first design
-- no authentication
 - no search or list tool
-- no custom summary output
-- no production hardening yet
+- no database-backed client registry yet
+- no rate limiting yet
+- no production infrastructure automation yet
+- local MCP lookup depends on a running local study service
 
 ## Recommended Next Functional Steps
 
-1. Add more study-related tools only when there is a clear consumer need.
-2. Decide whether users need a curated summary tool in addition to raw JSON.
-3. Define production access rules before broader distribution.
+1. Add a database-backed client registry and key lifecycle flow.
+2. Add more study-related tools only when there is a clear consumer need.
+3. Decide whether users need a curated summary tool in addition to raw JSON.

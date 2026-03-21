@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Shared;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -9,7 +10,7 @@ using ModelContextProtocol.Server;
 namespace ClinicalTrials.Mcp.Tools;
 
 [McpServerToolType]
-public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILogger<StudiesMcpTools> logger)
+public sealed class StudiesMcpTools(IStudyLookupEndpointClient studyLookupClient, ILogger<StudiesMcpTools> logger)
 {
     [McpServerTool(
         Name = "get_study_by_nct_id",
@@ -19,9 +20,9 @@ public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILog
         Destructive = false,
         OpenWorld = true,
         UseStructuredContent = true)]
-    [Description("Fetch a ClinicalTrials.gov study record by its NCT identifier, for example NCT04924608.")]
+    [Description("Fetch a study record by its NCT identifier, for example NCT04924608.")]
     public async Task<CallToolResult> GetStudyByNctIdAsync(
-        [Description("The ClinicalTrials.gov NCT identifier to look up, for example NCT04924608.")]
+        [Description("The NCT identifier to look up, for example NCT04924608.")]
         string nctId,
         CancellationToken cancellationToken)
     {
@@ -35,26 +36,26 @@ public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILog
                 "The nctId parameter is required.");
         }
 
-        var result = await studyLookupService.GetStudyAsync(trimmedNctId, cancellationToken);
+        var result = await studyLookupClient.GetStudyAsync(trimmedNctId, cancellationToken);
 
         if (result.FailureKind == StudyLookupFailureKind.RequestFailed)
         {
-            logger.LogError(result.Exception, "Failed to reach ClinicalTrials.gov for NCT ID {NctId}", trimmedNctId);
+            logger.LogError(result.Exception, "Failed to reach the configured study service for NCT ID {NctId}", trimmedNctId);
 
             return CreateErrorResult(
                 HttpStatusCode.BadGateway,
-                "ClinicalTrials.gov request failed",
-                "The upstream ClinicalTrials.gov service could not be reached.");
+                "Study service request failed",
+                "The configured study service could not be reached.");
         }
 
         if (result.FailureKind == StudyLookupFailureKind.TimedOut)
         {
-            logger.LogWarning(result.Exception, "ClinicalTrials.gov timed out for NCT ID {NctId}", trimmedNctId);
+            logger.LogWarning(result.Exception, "The configured study service timed out for NCT ID {NctId}", trimmedNctId);
 
             return CreateErrorResult(
                 HttpStatusCode.GatewayTimeout,
-                "ClinicalTrials.gov request timed out",
-                "The upstream ClinicalTrials.gov service did not respond in time.");
+                "Study service request timed out",
+                "The configured study service did not respond in time.");
         }
 
         if (result.StatusCode is null)
@@ -67,11 +68,11 @@ public sealed class StudiesMcpTools(IStudyLookupService studyLookupService, ILog
 
         if (!IsSuccessStatusCode(result.StatusCode.Value))
         {
-            var detail = $"ClinicalTrials.gov returned {(int)result.StatusCode.Value} {result.StatusCode.Value} for NCT ID {trimmedNctId}.";
+            var detail = $"The configured study service returned {(int)result.StatusCode.Value} {result.StatusCode.Value} for NCT ID {trimmedNctId}.";
 
             return CreateErrorResult(
                 result.StatusCode.Value,
-                "ClinicalTrials.gov returned an error",
+                "Study service returned an error",
                 detail,
                 result.Body);
         }

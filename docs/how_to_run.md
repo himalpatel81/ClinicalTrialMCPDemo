@@ -2,13 +2,13 @@
 
 This document explains how to run the ClinicalTrials REST API, the MCP server, and the automated tests from this repository.
 
-## Prerequisites
+Local runtime remains a required use case. The MCP server must stay runnable on a developer machine without Azure Key Vault, Azure SQL, Azure Redis, or Azure Monitor.
 
-Make sure the following are available on your machine:
+## Prerequisites
 
 - .NET SDK `10.x`
 - internet access to reach `https://clinicaltrials.gov/`
-- PowerShell or a terminal that can run `dotnet`
+- PowerShell or another terminal that can run `dotnet`
 
 ## Repository Root
 
@@ -31,21 +31,11 @@ cd E:\GitHimal\ClinicalTrialMCPDemo
 
 ## Build Everything
 
-To build the full solution:
-
 ```powershell
 dotnet build .\ClinicalTrials.Api\ClinicalTrials.Api.slnx
 ```
 
 ## Run The REST API
-
-The REST API project is:
-
-```text
-ClinicalTrials.Api\ClinicalTrials.Api\ClinicalTrials.Api.csproj
-```
-
-Run it with:
 
 ```powershell
 dotnet run --project .\ClinicalTrials.Api\ClinicalTrials.Api\ClinicalTrials.Api.csproj
@@ -56,9 +46,7 @@ Default development URLs:
 - `http://localhost:5010`
 - `https://localhost:7001`
 
-### Verify The REST API
-
-Open the study endpoint in a browser or run:
+Verify the REST API:
 
 ```powershell
 Invoke-WebRequest http://localhost:5010/api/studies/NCT04924608
@@ -67,23 +55,21 @@ Invoke-WebRequest http://localhost:5010/api/studies/NCT04924608
 Expected result:
 
 - HTTP `200 OK`
-- a JSON study payload returned from ClinicalTrials.gov
-
-You can also use the repo HTTP file:
-
-```text
-ClinicalTrials.Api\ClinicalTrials.Api\ClinicalTrials.Api.http
-```
+- JSON study payload returned from ClinicalTrials.gov
 
 ## Run The MCP Server
 
-The MCP server project is:
+The MCP host now routes study lookups through `ClinicalTrials.Api`.
 
-```text
-ClinicalTrials.Mcp\ClinicalTrials.Mcp\ClinicalTrials.Mcp.csproj
+For local development, start the REST API before starting the MCP server.
+
+Terminal 1:
+
+```powershell
+dotnet run --project .\ClinicalTrials.Api\ClinicalTrials.Api\ClinicalTrials.Api.csproj
 ```
 
-Run it with:
+Terminal 2:
 
 ```powershell
 dotnet run --project .\ClinicalTrials.Mcp\ClinicalTrials.Mcp\ClinicalTrials.Mcp.csproj
@@ -97,20 +83,45 @@ Default development URLs:
 Important endpoints:
 
 - MCP endpoint: `http://localhost:5011/mcp`
-- health endpoint: `http://localhost:5011/health`
+- liveness endpoint: `http://localhost:5011/health/live`
+- readiness endpoint: `http://localhost:5011/health/ready`
 
-### Verify The MCP Server
+## Local MCP Authentication
 
-Check the health endpoint:
+The MCP endpoint now requires an API key.
+
+Local development uses this seeded key:
+
+```text
+clinical-trials-local-dev-key
+```
+
+Header name:
+
+```text
+X-Api-Key
+```
+
+This key is for local development only. Do not reuse it in any shared or production environment.
+
+## Verify The MCP Server
+
+Check the health endpoints:
 
 ```powershell
-Invoke-WebRequest http://localhost:5011/health
+Invoke-WebRequest http://localhost:5011/health/live
+Invoke-WebRequest http://localhost:5011/health/ready
 ```
 
 Expected result:
 
-- HTTP `200 OK`
-- response body `healthy`
+- `/health/live` returns HTTP `200 OK` with body `healthy`
+- `/health/ready` returns HTTP `200 OK`
+
+Important:
+
+- `/health/ready` validates MCP host configuration only
+- a successful health check does not prove the REST API is currently reachable
 
 ## Connect An MCP Client
 
@@ -127,7 +138,10 @@ Current server entry:
   "servers": {
     "clinical-trials-mcp": {
       "type": "http",
-      "url": "http://localhost:5011/mcp"
+      "url": "http://localhost:5011/mcp",
+      "headers": {
+        "X-Api-Key": "clinical-trials-local-dev-key"
+      }
     }
   },
   "inputs": []
@@ -148,11 +162,12 @@ Use get_study_by_nct_id with nctId NCT04924608
 
 Expected result:
 
+- the client sends `X-Api-Key`
+- the tool returns a clean summary in visible content
 - the tool returns the raw study JSON as structured content
+- the lookup request is sent from MCP to `ClinicalTrials.Api`, which then calls ClinicalTrials.gov
 
 ## Run Automated Tests
-
-To run all tests:
 
 ```powershell
 dotnet test .\ClinicalTrials.Api\ClinicalTrials.Api.slnx
@@ -163,11 +178,12 @@ The test suite covers:
 - shared lookup service behavior
 - REST API integration behavior
 - MCP tool behavior
-- MCP host integration and tool discovery
+- MCP host integration behavior
+- authenticated and unauthenticated MCP access
 
 ## Run API And MCP Together
 
-If you want both hosts available at the same time, open two terminals from the repo root.
+Open two terminals from the repo root.
 
 Terminal 1:
 
@@ -199,18 +215,15 @@ Checks:
 
 - verify internet access
 - verify `https://clinicaltrials.gov/` is reachable
-- verify `ClinicalTrials:BaseUrl` is present in app settings
+- verify `ClinicalTrials:BaseUrl` is present in the REST API configuration
 
-### Port Already In Use
-
-Symptoms:
-
-- `dotnet run` fails to start
+### MCP Client Gets `401 Unauthorized`
 
 Checks:
 
-- free ports `5010`, `5011`, `7001`, or `7002`
-- stop previous runs of the API or MCP host
+- verify the client is sending `X-Api-Key`
+- verify the local key value is `clinical-trials-local-dev-key`
+- verify the MCP server is running in `Development`
 
 ### MCP Client Cannot Connect
 
@@ -218,10 +231,22 @@ Checks:
 
 - verify the MCP server is running
 - verify `.vscode\mcp.json` points to `http://localhost:5011/mcp`
-- verify `http://localhost:5011/health` responds successfully
+- verify `.vscode\mcp.json` includes the `X-Api-Key` header
+- verify `http://localhost:5011/health/live` responds successfully
+- verify `http://localhost:5011/health/ready` responds successfully
+
+### MCP Returns `502 Bad Gateway`
+
+Checks:
+
+- verify `ClinicalTrials.Api` is running on `http://localhost:5010`
+- verify `StudyService:BaseUrl` points to the correct REST API host
+- verify the REST API can answer `http://localhost:5010/api/studies/NCT04924608`
 
 ## Related Documents
 
+- `docs\index.md`
+- `docs\production-readiness.md`
 - `docs\mcp-server.md`
 - `docs\mcp_tech.md`
 - `docs\mcp_func.md`

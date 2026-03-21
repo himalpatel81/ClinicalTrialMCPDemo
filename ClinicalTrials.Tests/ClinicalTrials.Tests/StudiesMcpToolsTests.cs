@@ -1,4 +1,5 @@
 using System.Net;
+using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Mcp.Tools;
 using ClinicalTrials.Shared;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,7 +12,7 @@ public sealed class StudiesMcpToolsTests
     [Fact]
     public async Task GetStudyByNctIdAsync_ReturnsStructuredJsonForSuccessfulLookup()
     {
-        var service = new StubStudyLookupService
+        var service = new StubStudyLookupEndpointClient
         {
             Result = StudyLookupResult.FromUpstream(
                 HttpStatusCode.OK,
@@ -40,7 +41,7 @@ public sealed class StudiesMcpToolsTests
     [Fact]
     public async Task GetStudyByNctIdAsync_ReturnsValidationErrorForBlankInput()
     {
-        var service = new StubStudyLookupService();
+        var service = new StubStudyLookupEndpointClient();
         var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
 
         var result = await tool.GetStudyByNctIdAsync("   ", CancellationToken.None);
@@ -56,7 +57,7 @@ public sealed class StudiesMcpToolsTests
     [Fact]
     public async Task GetStudyByNctIdAsync_ReturnsStructuredErrorForUpstreamNotFound()
     {
-        var service = new StubStudyLookupService
+        var service = new StubStudyLookupEndpointClient
         {
             Result = StudyLookupResult.FromUpstream(
                 HttpStatusCode.NotFound,
@@ -72,14 +73,14 @@ public sealed class StudiesMcpToolsTests
         Assert.True(result.StructuredContent.HasValue);
         var structuredContent = result.StructuredContent.Value;
         Assert.Equal(404, structuredContent.GetProperty("statusCode").GetInt32());
-        Assert.Equal("ClinicalTrials.gov returned an error", structuredContent.GetProperty("title").GetString());
+        Assert.Equal("Study service returned an error", structuredContent.GetProperty("title").GetString());
         Assert.Equal("not found", structuredContent.GetProperty("upstreamBody").GetProperty("message").GetString());
     }
 
     [Fact]
     public async Task GetStudyByNctIdAsync_ReturnsStructuredErrorForConnectivityFailure()
     {
-        var service = new StubStudyLookupService
+        var service = new StubStudyLookupEndpointClient
         {
             Result = StudyLookupResult.RequestFailed(new HttpRequestException("boom"))
         };
@@ -92,13 +93,13 @@ public sealed class StudiesMcpToolsTests
         Assert.True(result.StructuredContent.HasValue);
         var structuredContent = result.StructuredContent.Value;
         Assert.Equal(502, structuredContent.GetProperty("statusCode").GetInt32());
-        Assert.Equal("ClinicalTrials.gov request failed", structuredContent.GetProperty("title").GetString());
+        Assert.Equal("Study service request failed", structuredContent.GetProperty("title").GetString());
     }
 
     [Fact]
     public async Task GetStudyByNctIdAsync_ReturnsStructuredErrorForTimeout()
     {
-        var service = new StubStudyLookupService
+        var service = new StubStudyLookupEndpointClient
         {
             Result = StudyLookupResult.TimedOut(new TaskCanceledException("timeout"))
         };
@@ -111,10 +112,10 @@ public sealed class StudiesMcpToolsTests
         Assert.True(result.StructuredContent.HasValue);
         var structuredContent = result.StructuredContent.Value;
         Assert.Equal(504, structuredContent.GetProperty("statusCode").GetInt32());
-        Assert.Equal("ClinicalTrials.gov request timed out", structuredContent.GetProperty("title").GetString());
+        Assert.Equal("Study service request timed out", structuredContent.GetProperty("title").GetString());
     }
 
-    private sealed class StubStudyLookupService : IStudyLookupService
+    private sealed class StubStudyLookupEndpointClient : IStudyLookupEndpointClient
     {
         public string? LastNctId { get; private set; }
 

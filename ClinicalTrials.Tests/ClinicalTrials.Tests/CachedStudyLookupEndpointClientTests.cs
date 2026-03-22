@@ -1,5 +1,6 @@
 using System.Net;
 using ClinicalTrials.Mcp.Caching;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Shared;
 using ClinicalTrials.Tests.Testing;
@@ -60,6 +61,7 @@ public sealed class CachedStudyLookupEndpointClientTests
         new(
             new StudyServiceHttpClientAdapter(innerClient),
             cacheStore,
+            new McpTelemetry(),
             Options.Create(
                 new StudyLookupCacheSettings
                 {
@@ -80,7 +82,7 @@ public sealed class CachedStudyLookupEndpointClientTests
     }
 
     private sealed class StudyServiceHttpClientAdapter(IStudyLookupEndpointClient innerClient)
-        : StudyServiceHttpClient(new TestHttpClientFactory(new HttpClient()), Options.Create(new StudyServiceSettings()))
+        : StudyServiceHttpClient(new TestHttpClientFactory(new HttpClient()), new McpTelemetry(), Options.Create(new StudyServiceSettings()))
     {
         public override Task<StudyLookupResult> GetStudyAsync(string nctId, CancellationToken cancellationToken) =>
             innerClient.GetStudyAsync(nctId, cancellationToken);

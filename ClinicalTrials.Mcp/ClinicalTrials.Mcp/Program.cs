@@ -2,10 +2,12 @@ using ClinicalTrials.Mcp.Authentication;
 using ClinicalTrials.Mcp.Caching;
 using ClinicalTrials.Mcp.Data;
 using ClinicalTrials.Mcp.Health;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.RateLimiting;
 using ClinicalTrials.Mcp.Runtime;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Mcp.Tools;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
@@ -13,7 +15,10 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -84,6 +89,17 @@ builder.Services.AddOptions<SecretsSettings>()
         $"Configuration '{SecretsSettings.SectionName}:AzureKeyVault:VaultUri' must be an absolute URI when Azure Key Vault is enabled.")
     .ValidateOnStart();
 
+builder.Services.AddOptions<TelemetrySettings>()
+    .BindConfiguration(TelemetrySettings.SectionName)
+    .ValidateOnStart();
+
+builder.Logging.Configure(options =>
+{
+    options.ActivityTrackingOptions = ActivityTrackingOptions.SpanId
+        | ActivityTrackingOptions.TraceId
+        | ActivityTrackingOptions.ParentId;
+});
+
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
@@ -94,9 +110,49 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddMemoryCache();
 builder.Services.AddRequestTimeouts();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<McpTelemetry>();
 
 var cacheProvider = builder.Configuration.GetValue<CacheProvider>($"{StudyLookupCacheSettings.SectionName}:Provider");
 var rateLimitProvider = builder.Configuration.GetValue<RateLimitProvider>($"{McpRateLimitingSettings.SectionName}:Provider");
+var telemetrySettings = builder.Configuration.GetSection(TelemetrySettings.SectionName).Get<TelemetrySettings>()
+    ?? new TelemetrySettings();
+
+var openTelemetryBuilder = builder.Services.AddOpenTelemetry();
+openTelemetryBuilder.WithTracing(tracing =>
+{
+    tracing.AddAspNetCoreInstrumentation(options =>
+    {
+        options.RecordException = true;
+    });
+    tracing.AddHttpClientInstrumentation();
+    tracing.AddSource(McpTelemetry.ActivitySourceName);
+
+    if (telemetrySettings.Console.Enabled)
+    {
+        tracing.AddConsoleExporter();
+    }
+});
+openTelemetryBuilder.WithMetrics(metrics =>
+{
+    metrics.AddAspNetCoreInstrumentation();
+    metrics.AddHttpClientInstrumentation();
+    metrics.AddMeter(McpTelemetry.MeterName);
+
+    if (telemetrySettings.Console.Enabled)
+    {
+        metrics.AddConsoleExporter();
+    }
+});
+
+if (!string.IsNullOrWhiteSpace(telemetrySettings.ApplicationInsights.ConnectionString))
+{
+    openTelemetryBuilder.UseAzureMonitor(options =>
+    {
+        options.ConnectionString = telemetrySettings.ApplicationInsights.ConnectionString;
+    });
+}
+
 if (cacheProvider == CacheProvider.Redis || rateLimitProvider == RateLimitProvider.Redis)
 {
     var redisConnectionString = builder.Configuration.GetConnectionString("Redis")
@@ -197,6 +253,8 @@ if (app.Configuration.GetValue<bool>("Hosting:ForwardedHeaders:Enabled"))
     app.UseForwardedHeaders();
 }
 
+app.UseMiddleware<McpCorrelationMiddleware>();
+app.UseMiddleware<McpRequestTelemetryMiddleware>();
 app.UseMiddleware<McpExceptionHandlingMiddleware>();
 app.UseRequestTimeouts();
 app.UseAuthentication();

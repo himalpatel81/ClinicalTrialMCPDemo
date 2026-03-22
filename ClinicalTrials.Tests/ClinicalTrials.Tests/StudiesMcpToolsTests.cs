@@ -1,7 +1,9 @@
 using System.Net;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Mcp.Tools;
 using ClinicalTrials.Shared;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
 
@@ -20,7 +22,7 @@ public sealed class StudiesMcpToolsTests
                 """{"nctId":"NCT04924608","briefTitle":"Study title","overallStatus":"RECRUITING","studyType":"INTERVENTIONAL"}""")
         };
 
-        var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
+        var tool = CreateTool(service);
 
         var result = await tool.GetStudyByNctIdAsync(" NCT04924608 ", CancellationToken.None);
 
@@ -42,7 +44,7 @@ public sealed class StudiesMcpToolsTests
     public async Task GetStudyByNctIdAsync_ReturnsValidationErrorForBlankInput()
     {
         var service = new StubStudyLookupEndpointClient();
-        var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
+        var tool = CreateTool(service);
 
         var result = await tool.GetStudyByNctIdAsync("   ", CancellationToken.None);
 
@@ -65,7 +67,7 @@ public sealed class StudiesMcpToolsTests
                 """{"message":"not found"}""")
         };
 
-        var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
+        var tool = CreateTool(service);
 
         var result = await tool.GetStudyByNctIdAsync("NCT404", CancellationToken.None);
 
@@ -85,7 +87,7 @@ public sealed class StudiesMcpToolsTests
             Result = StudyLookupResult.RequestFailed(new HttpRequestException("boom"))
         };
 
-        var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
+        var tool = CreateTool(service);
 
         var result = await tool.GetStudyByNctIdAsync("NCT04924608", CancellationToken.None);
 
@@ -104,7 +106,7 @@ public sealed class StudiesMcpToolsTests
             Result = StudyLookupResult.TimedOut(new TaskCanceledException("timeout"))
         };
 
-        var tool = new StudiesMcpTools(service, NullLogger<StudiesMcpTools>.Instance);
+        var tool = CreateTool(service);
 
         var result = await tool.GetStudyByNctIdAsync("NCT04924608", CancellationToken.None);
 
@@ -128,4 +130,11 @@ public sealed class StudiesMcpToolsTests
             return Task.FromResult(Result);
         }
     }
+
+    private static StudiesMcpTools CreateTool(IStudyLookupEndpointClient service) =>
+        new(
+            service,
+            new HttpContextAccessor(),
+            new McpTelemetry(),
+            NullLogger<StudiesMcpTools>.Instance);
 }

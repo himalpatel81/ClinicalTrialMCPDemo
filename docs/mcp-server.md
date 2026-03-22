@@ -17,6 +17,7 @@ This document describes the Phase 3 HTTP MCP server that exposes study lookup fo
 - Local cache and rate limiting: in-memory
 - MCP request timeout: `30` seconds by default
 - MCP max request body size: `1048576` bytes by default
+- Correlation header: `X-Correlation-Id`
 
 The MCP server does not call ClinicalTrials.gov directly. It calls a configurable study service, and the local default points to `ClinicalTrials.Api`.
 
@@ -101,3 +102,4 @@ Expected result:
 - the tool returns the raw study JSON as structured content
 - the request path used by MCP defaults to `http://localhost:5010/api/studies/{nctId}`
 - `/health/ready` confirms SQL reachability and, when enabled, Redis reachability
+- each response includes a correlation ID header for tracing and support

@@ -1,4 +1,5 @@
 using System.Net;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Shared;
 using ClinicalTrials.Tests.Testing;
@@ -120,6 +121,6 @@ public sealed class StudyServiceHttpClientTests
             BaseAddress = new Uri(settings.BaseUrl)
         };
 
-        return new StudyServiceHttpClient(new TestHttpClientFactory(httpClient), Options.Create(settings));
+        return new StudyServiceHttpClient(new TestHttpClientFactory(httpClient), new McpTelemetry(), Options.Create(settings));
     }
 }

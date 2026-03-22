@@ -119,6 +119,7 @@ Phase 3 defaults:
 - study-service resilience with retry, timeout, and circuit breaker
 - MCP request timeout: `30` seconds
 - MCP max request body size: `1048576` bytes
+- correlation header: `X-Correlation-Id`
 
 ## Local MCP Authentication
 
@@ -146,6 +147,24 @@ Local development uses:
 
 Local development does not require local Redis.
 
+## Optional Telemetry Configuration
+
+Local export is optional.
+
+Enable console OpenTelemetry output:
+
+```powershell
+$env:Telemetry__Console__Enabled = "true"
+```
+
+Enable Azure Monitor / Application Insights export:
+
+```powershell
+$env:Telemetry__ApplicationInsights__ConnectionString = "<connection-string>"
+```
+
+If neither is set, local development still works and structured logs remain available through the normal host log output.
+
 ## Verify The MCP Server
 
 Check the health endpoints:
@@ -159,6 +178,7 @@ Expected result:
 
 - `/health/live` returns HTTP `200 OK` with body `healthy`
 - `/health/ready` returns HTTP `200 OK` with a JSON readiness report when local SQL is reachable
+- the response includes `X-Correlation-Id`
 
 Important:
 
@@ -272,6 +292,7 @@ The test suite covers:
 - rate limiting behavior
 - readiness dependency behavior
 - request-size protection behavior
+- correlation-header behavior
 
 ## Common Troubleshooting
 
@@ -334,4 +355,5 @@ Checks:
 - `docs\mcp-server.md`
 - `docs\mcp_tech.md`
 - `docs\mcp_func.md`
+- `docs\operations-runbook.md`
 - `docs\studies-controller-endpoints.md`

@@ -8,6 +8,8 @@ This index provides a single entry point for the main documents in this reposito
   - commands to build, run, test, administer, and troubleshoot the API and MCP host
 - `docs\client-onboarding.md`
   - process for creating a client, issuing keys, rotating keys, and deactivating access
+- `docs\operations-runbook.md`
+  - alert catalog, telemetry notes, and operational incident runbooks for the MCP host
 - `docs\production-readiness.md`
   - phased production hardening plan with status, deliverables, and exit criteria
 

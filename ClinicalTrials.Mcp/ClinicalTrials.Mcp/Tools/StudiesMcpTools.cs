@@ -1,19 +1,30 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Security.Claims;
+using ClinicalTrials.Mcp.Authentication;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Shared;
+using Microsoft.AspNetCore.Http;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace ClinicalTrials.Mcp.Tools;
 
 [McpServerToolType]
-public sealed class StudiesMcpTools(IStudyLookupEndpointClient studyLookupClient, ILogger<StudiesMcpTools> logger)
+public sealed class StudiesMcpTools(
+    IStudyLookupEndpointClient studyLookupClient,
+    IHttpContextAccessor httpContextAccessor,
+    McpTelemetry telemetry,
+    ILogger<StudiesMcpTools> logger)
 {
+    private const string ToolName = "get_study_by_nct_id";
+
     [McpServerTool(
-        Name = "get_study_by_nct_id",
+        Name = ToolName,
         Title = "Get Study By NCT ID",
         ReadOnly = true,
         Idempotent = true,
@@ -26,14 +37,20 @@ public sealed class StudiesMcpTools(IStudyLookupEndpointClient studyLookupClient
         string nctId,
         CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
+        var clientCode = httpContextAccessor.HttpContext?.User.FindFirstValue(ApiKeyAuthenticationDefaults.ClientIdClaimType);
+        using var activity = telemetry.StartToolActivity(ToolName, clientCode);
+
         var trimmedNctId = nctId.Trim();
 
         if (string.IsNullOrWhiteSpace(trimmedNctId))
         {
-            return CreateErrorResult(
+            var error = CreateErrorResult(
                 HttpStatusCode.BadRequest,
                 "Invalid NCT ID",
                 "The nctId parameter is required.");
+            telemetry.RecordToolInvocation(ToolName, clientCode, isSuccess: false, stopwatch.Elapsed);
+            return error;
         }
 
         var result = await studyLookupClient.GetStudyAsync(trimmedNctId, cancellationToken);
@@ -42,42 +59,51 @@ public sealed class StudiesMcpTools(IStudyLookupEndpointClient studyLookupClient
         {
             logger.LogError(result.Exception, "Failed to reach the configured study service for NCT ID {NctId}", trimmedNctId);
 
-            return CreateErrorResult(
+            var error = CreateErrorResult(
                 HttpStatusCode.BadGateway,
                 "Study service request failed",
                 "The configured study service could not be reached.");
+            telemetry.RecordToolInvocation(ToolName, clientCode, isSuccess: false, stopwatch.Elapsed);
+            return error;
         }
 
         if (result.FailureKind == StudyLookupFailureKind.TimedOut)
         {
             logger.LogWarning(result.Exception, "The configured study service timed out for NCT ID {NctId}", trimmedNctId);
 
-            return CreateErrorResult(
+            var error = CreateErrorResult(
                 HttpStatusCode.GatewayTimeout,
                 "Study service request timed out",
                 "The configured study service did not respond in time.");
+            telemetry.RecordToolInvocation(ToolName, clientCode, isSuccess: false, stopwatch.Elapsed);
+            return error;
         }
 
         if (result.StatusCode is null)
         {
-            return CreateErrorResult(
+            var error = CreateErrorResult(
                 HttpStatusCode.InternalServerError,
                 "Study lookup failed",
                 "The study lookup service returned no status code.");
+            telemetry.RecordToolInvocation(ToolName, clientCode, isSuccess: false, stopwatch.Elapsed);
+            return error;
         }
 
         if (!IsSuccessStatusCode(result.StatusCode.Value))
         {
             var detail = $"The configured study service returned {(int)result.StatusCode.Value} {result.StatusCode.Value} for NCT ID {trimmedNctId}.";
 
-            return CreateErrorResult(
+            var error = CreateErrorResult(
                 result.StatusCode.Value,
                 "Study service returned an error",
                 detail,
                 result.Body);
+            telemetry.RecordToolInvocation(ToolName, clientCode, isSuccess: false, stopwatch.Elapsed);
+            return error;
         }
 
         var structuredContent = ParseStudyPayload(result.Body);
+        telemetry.RecordToolInvocation(ToolName, clientCode, isSuccess: true, stopwatch.Elapsed);
 
         return new CallToolResult
         {

@@ -34,7 +34,7 @@ The service must stay runnable end-to-end on a developer machine without Azure K
 | 1 | Security Foundation | Completed | API key auth, protected `/mcp`, split health endpoints, local dev key flow, and production-safe host defaults are in place |
 | 2 | Data Plane Hardening | Completed | SQL-backed client registry, hashed API keys, local-memory and Redis-capable rate limiting/caching, admin CLI, and checked-in SQL scripts are in place |
 | 3 | Runtime Resilience | Completed | HTTP resilience, request protections, deeper readiness checks, and safer host failure handling are in place |
-| 4 | Observability And Ops | Pending | App Insights, logs, metrics, alerts, and operational runbooks |
+| 4 | Observability And Ops | Completed | Correlation-aware logs, OpenTelemetry metrics and traces, Azure Monitor integration hooks, alert catalog, and operational runbooks are in place |
 | 5 | Deployment Platform | Pending | Terraform-managed Azure resources, containerization, App Service primary deployment, Container Apps compatibility |
 | 6 | Release Validation | Pending | Security review, load validation, smoke tests, rollback readiness, and production cutover |
 
@@ -155,17 +155,25 @@ Exit criteria:
 
 ### Phase 4: Observability And Ops
 
-**Status:** `Pending`
+**Status:** `Completed`
 
-Deliverables:
+Delivered:
 
-- integrate Azure Monitor and Application Insights
-- emit structured logs with correlation IDs
-- track request rate, tool latency, upstream latency, auth failures, `429`s, `5xx`s, cache hit rate, and per-client usage
-- ensure logs never contain raw API keys or sensitive payload leaks
-- create alert rules for auth spikes, `429` spikes, `5xx` spikes, readiness failure, upstream degradation, and SQL or Redis issues
-- write runbooks for key rotation, revocation, rollback, and dependency outage handling
+- integrate OpenTelemetry-based tracing and metrics into the MCP host
+- add optional Azure Monitor / Application Insights export through configuration
+- emit structured request logs with correlation IDs
+- track request rate, tool latency, upstream latency, auth failures, `429`s, `5xx`s, cache events, and per-client usage
+- keep authentication and request logs free of raw API key values
+- add a checked-in alert catalog for auth spikes, `429` spikes, `5xx` spikes, readiness failure, upstream degradation, and SQL or Redis issues
+- add checked-in operational runbooks for key rotation, revocation, rollback, and dependency outage handling
 - keep local telemetry non-Azure-dependent
+
+Implementation notes:
+
+- custom observability is implemented under `ClinicalTrials.Mcp/Observability`
+- Azure Monitor export is opt-in through `Telemetry:ApplicationInsights:ConnectionString`
+- local console OpenTelemetry export is opt-in through `Telemetry:Console:Enabled`
+- actual Azure alert resource deployment remains part of Phase 5 infrastructure work, but the alert definitions are now documented in-repo
 
 Exit criteria:
 
@@ -265,7 +273,7 @@ Exit criteria:
 - local development will use the existing local SQL Server environment and will not require local Redis
 - database creation and seeding will be delivered as checked-in SQL scripts under `SQL/`, not as startup code or auto-migrations
 - Terraform and Azure DevOps pipelines are in scope
-- production go-live is gated on completion of phases 4 through 6
+- production go-live is gated on completion of phases 5 through 6
 - the MCP server must remain runnable locally throughout the hardening effort
 - local runtime must not require any Azure-managed service
 

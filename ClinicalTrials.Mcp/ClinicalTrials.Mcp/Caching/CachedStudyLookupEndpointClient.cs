@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Shared;
 using Microsoft.Extensions.Options;
@@ -9,6 +10,7 @@ namespace ClinicalTrials.Mcp.Caching;
 public sealed class CachedStudyLookupEndpointClient(
     StudyServiceHttpClient innerClient,
     IStudyLookupCacheStore cacheStore,
+    McpTelemetry telemetry,
     IOptions<StudyLookupCacheSettings> settings)
     : IStudyLookupEndpointClient
 {
@@ -20,18 +22,22 @@ public sealed class CachedStudyLookupEndpointClient(
         var cachedValue = await cacheStore.GetAsync(cacheKey, cancellationToken);
         if (!string.IsNullOrWhiteSpace(cachedValue))
         {
+            telemetry.RecordCacheEvent("hit");
             return JsonSerializer.Deserialize<CachedStudyLookupResult>(cachedValue)!.ToStudyLookupResult();
         }
 
+        telemetry.RecordCacheEvent("miss");
         var result = await innerClient.GetStudyAsync(nctId, cancellationToken);
         var ttl = GetTtl(result);
         if (ttl is null)
         {
+            telemetry.RecordCacheEvent("skip_store");
             return result;
         }
 
         var cachePayload = JsonSerializer.Serialize(CachedStudyLookupResult.From(result));
         await cacheStore.SetAsync(cacheKey, cachePayload, ttl.Value, cancellationToken);
+        telemetry.RecordCacheEvent(result.StatusCode == HttpStatusCode.NotFound ? "store_not_found" : "store_success");
 
         return result;
     }

@@ -15,6 +15,7 @@ The server provides:
 - study lookup caching
 - per-client and global rate limiting
 - request timeout and request-size protections
+- correlation-aware request handling
 
 Current scope:
 
@@ -87,6 +88,16 @@ The MCP endpoint enforces:
 
 Limit exhaustion returns HTTP `429`.
 
+### Rule 7: Correlation Support
+
+The MCP host adds `X-Correlation-Id` to responses.
+
+Functional meaning:
+
+- callers can provide their own correlation ID
+- otherwise the server generates one
+- support and diagnostics can use that value to trace a request
+
 ## Functional Scenarios
 
 ### Scenario 1: Valid NCT ID
@@ -150,6 +161,12 @@ Expected outcome:
 
 - `/health/ready` returns a non-success status when required internal dependencies are unavailable
 
+### Scenario 11: Correlated Request
+
+Expected outcome:
+
+- if the caller sends `X-Correlation-Id`, the response returns the same value
+
 ## Health Endpoints
 
 ### `GET /health/live`
@@ -195,6 +212,7 @@ The implementation is functionally correct when:
 - repeated `404` lookups can be served from negative cache
 - per-client rate-limit exhaustion returns `429`
 - oversized requests return `413`
+- responses include `X-Correlation-Id`
 
 ## Current Constraints
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using ClinicalTrials.Mcp.Authentication;
+using ClinicalTrials.Mcp.Observability;
 using Microsoft.Extensions.Options;
 
 namespace ClinicalTrials.Mcp.RateLimiting;
@@ -9,6 +10,8 @@ namespace ClinicalTrials.Mcp.RateLimiting;
 public sealed class McpRateLimitingMiddleware(
     RequestDelegate next,
     IMcpRateLimitStore rateLimitStore,
+    McpTelemetry telemetry,
+    ILogger<McpRateLimitingMiddleware> logger,
     IOptions<McpRateLimitingSettings> settings,
     TimeProvider timeProvider)
 {
@@ -27,6 +30,8 @@ public sealed class McpRateLimitingMiddleware(
 
         if (globalCount > this.settings.GlobalPermitLimit)
         {
+            telemetry.RecordRateLimitRejection("global", clientCode: null);
+            logger.LogWarning("Rejected request because the global MCP rate limit was exceeded.");
             await WriteTooManyRequestsAsync(context, retryAfterSeconds, "Global MCP rate limit exceeded.");
             return;
         }
@@ -46,6 +51,8 @@ public sealed class McpRateLimitingMiddleware(
 
         if (clientCount > permitLimit)
         {
+            telemetry.RecordRateLimitRejection("client", clientId);
+            logger.LogWarning("Rejected request for client {ClientCode} because the client MCP rate limit was exceeded.", clientId);
             await WriteTooManyRequestsAsync(context, retryAfterSeconds, "Client MCP rate limit exceeded.");
             return;
         }

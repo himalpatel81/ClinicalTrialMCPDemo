@@ -38,7 +38,9 @@ The runtime flow is:
 - ASP.NET Core
 - `ModelContextProtocol.AspNetCore` `1.1.0`
 - `Microsoft.Data.SqlClient`
+- `Azure.Monitor.OpenTelemetry.AspNetCore`
 - `Microsoft.Extensions.Http.Resilience`
+- `OpenTelemetry`
 - `StackExchange.Redis`
 - `Microsoft.Extensions.Caching.StackExchangeRedis`
 - xUnit
@@ -55,6 +57,7 @@ The runtime flow is:
 - cache lookup responses
 - enforce per-client and global rate limits
 - bound MCP request size and timeout
+- emit structured logs, metrics, and traces
 - preserve a non-Azure local runtime path
 
 ### Key Startup Behavior
@@ -67,10 +70,12 @@ The runtime flow is:
 - validates client registry connection string presence
 - validates cache and rate-limit settings
 - validates request-protection and secrets settings
+- validates telemetry configuration
 - registers SQL-backed `IClientRegistryStore`
 - registers readiness checks for SQL and Redis dependencies
 - registers memory or Redis cache based on configuration
 - registers memory or Redis rate-limit storage based on configuration
+- registers OpenTelemetry tracing and metrics
 - registers the `ApiKey` auth scheme and active-key policy
 - registers the resilient study lookup HTTP client and caching decorator
 - maps:
@@ -210,6 +215,33 @@ Behavior:
 - applies request timeout metadata to `/mcp`
 - returns problem responses for malformed or oversized requests
 
+## Observability
+
+Observability is implemented by:
+
+- [McpTelemetry.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Observability/McpTelemetry.cs)
+- [McpCorrelationMiddleware.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Observability/McpCorrelationMiddleware.cs)
+- [McpRequestTelemetryMiddleware.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Observability/McpRequestTelemetryMiddleware.cs)
+- [TelemetrySettings.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Observability/TelemetrySettings.cs)
+
+The host now emits:
+
+- structured request completion logs
+- correlation IDs on every response
+- request rate and latency metrics
+- auth-failure metrics
+- rate-limit rejection metrics
+- tool invocation count and duration metrics
+- study-service request count and duration metrics
+- cache hit, miss, and store metrics
+- ASP.NET Core and outbound HTTP traces through OpenTelemetry
+
+Telemetry export modes:
+
+- local logs only
+- optional console OpenTelemetry export
+- optional Azure Monitor / Application Insights export
+
 ## Caching Design
 
 Caching is implemented by:
@@ -273,19 +305,20 @@ The current test suite covers:
 - per-client rate limiting
 - readiness failure for SQL and Redis probe failures
 - request-size protection on `/mcp`
+- correlation ID header behavior
 - MCP tool discovery and invocation
 
-The current suite passes with 37 tests.
+The current suite passes with 38 tests.
 
 ## Current Technical Limits
 
-- no structured correlation or audit logging yet
 - readiness still intentionally excludes live study-service reachability
+- Azure alert resources are documented but not yet provisioned
 - no deployment automation yet
 
 ## Recommended Next Technical Steps
 
-1. Add upstream resilience policies and deeper readiness checks.
-2. Add structured correlation and audit logging.
-3. Add production telemetry and alerting.
-4. Add deployment automation and platform assets.
+1. Provision Azure alert resources from the checked-in operations guidance.
+2. Add deployment automation and platform assets.
+3. Validate telemetry dashboards and alert thresholds in a deployed environment.
+4. Run production-like load validation against the instrumented host.

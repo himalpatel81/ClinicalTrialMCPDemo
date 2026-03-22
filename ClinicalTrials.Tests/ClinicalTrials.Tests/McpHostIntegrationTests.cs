@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using ClinicalTrials.Mcp.Health;
+using ClinicalTrials.Mcp.Observability;
 using ClinicalTrials.Mcp.Tools;
 using ClinicalTrials.Tests.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,6 +28,26 @@ public sealed class McpHostIntegrationTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("\"healthy\"", await response.Content.ReadAsStringAsync());
+        Assert.True(response.Headers.Contains(McpCorrelationMiddleware.CorrelationIdHeaderName));
+    }
+
+    [Fact]
+    public async Task LiveHealthEndpoint_EchoesIncomingCorrelationId()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608"}""")));
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(McpCorrelationMiddleware.CorrelationIdHeaderName, "corr-test-123");
+
+        var response = await client.GetAsync("/health/live");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("corr-test-123", Assert.Single(response.Headers.GetValues(McpCorrelationMiddleware.CorrelationIdHeaderName)));
     }
 
     [Fact]

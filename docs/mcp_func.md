@@ -14,6 +14,7 @@ The server provides:
 - SQL-backed API key access control
 - study lookup caching
 - per-client and global rate limiting
+- request timeout and request-size protections
 
 Current scope:
 
@@ -137,6 +138,18 @@ Expected outcome:
 
 - MCP request returns HTTP `429`
 
+### Scenario 9: Oversized MCP Request
+
+Expected outcome:
+
+- MCP request is rejected with HTTP `413`
+
+### Scenario 10: Internal Dependency Readiness Failure
+
+Expected outcome:
+
+- `/health/ready` returns a non-success status when required internal dependencies are unavailable
+
 ## Health Endpoints
 
 ### `GET /health/live`
@@ -145,11 +158,10 @@ Confirms that the MCP host process is running.
 
 ### `GET /health/ready`
 
-Confirms that required Phase 2 configuration is present.
+Confirms that required Phase 3 configuration and internal dependencies are ready.
 
 It does not confirm:
 
-- live SQL connectivity
 - live study-service reachability
 
 ## Local Functional Expectations
@@ -168,6 +180,7 @@ Local profile behavior:
 - in-memory cache
 - in-memory rate limiting
 - no local Redis dependency
+- live readiness check against local SQL
 
 ## Acceptance Criteria
 
@@ -181,10 +194,10 @@ The implementation is functionally correct when:
 - repeated successful lookups can be served from cache
 - repeated `404` lookups can be served from negative cache
 - per-client rate-limit exhaustion returns `429`
+- oversized requests return `413`
 
 ## Current Constraints
 
 - one MCP tool only
 - no search or list tool
-- readiness does not yet prove live dependency connectivity
-- no resilience policies yet
+- readiness still does not prove live study-service reachability

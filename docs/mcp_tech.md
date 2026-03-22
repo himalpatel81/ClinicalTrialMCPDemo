@@ -38,6 +38,7 @@ The runtime flow is:
 - ASP.NET Core
 - `ModelContextProtocol.AspNetCore` `1.1.0`
 - `Microsoft.Data.SqlClient`
+- `Microsoft.Extensions.Http.Resilience`
 - `StackExchange.Redis`
 - `Microsoft.Extensions.Caching.StackExchangeRedis`
 - xUnit
@@ -50,8 +51,10 @@ The runtime flow is:
 - protect `/mcp` with SQL-backed API key authentication
 - expose anonymous liveness and readiness endpoints
 - call a configurable study service over HTTP
+- apply HTTP resilience to outbound study-service calls
 - cache lookup responses
 - enforce per-client and global rate limits
+- bound MCP request size and timeout
 - preserve a non-Azure local runtime path
 
 ### Key Startup Behavior
@@ -59,14 +62,17 @@ The runtime flow is:
 [Program.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Program.cs) now:
 
 - validates study service settings
+- validates study-service resilience settings
 - validates API key header settings
 - validates client registry connection string presence
 - validates cache and rate-limit settings
+- validates request-protection and secrets settings
 - registers SQL-backed `IClientRegistryStore`
+- registers readiness checks for SQL and Redis dependencies
 - registers memory or Redis cache based on configuration
 - registers memory or Redis rate-limit storage based on configuration
 - registers the `ApiKey` auth scheme and active-key policy
-- registers the study lookup HTTP client and caching decorator
+- registers the resilient study lookup HTTP client and caching decorator
 - maps:
   - `GET /health/live`
   - `GET /health/ready`
@@ -176,6 +182,34 @@ Current local default:
 
 This keeps the MCP host independent from the direct ClinicalTrials.gov integration and makes future replacement of `ClinicalTrials.Api` a lower-disruption change.
 
+## Runtime Resilience
+
+Outbound study-service resilience is configured through:
+
+- [StudyServiceResilienceSettings.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Services/StudyServiceResilienceSettings.cs)
+- `StudyService:Resilience`
+
+The configured HTTP pipeline applies:
+
+- total request timeout
+- per-attempt timeout
+- bounded retry
+- circuit breaker
+
+[StudyServiceHttpClient.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Services/StudyServiceHttpClient.cs) maps resilience timeout and circuit-breaker failures back into the existing lookup failure contract so MCP tool behavior remains stable.
+
+Inbound request protection is implemented by:
+
+- [McpRequestProtectionSettings.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Runtime/McpRequestProtectionSettings.cs)
+- [McpRequestProtectionMiddleware.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Runtime/McpRequestProtectionMiddleware.cs)
+- [McpExceptionHandlingMiddleware.cs](/e:/GitHimal/ClinicalTrialMCPDemo/ClinicalTrials.Mcp/ClinicalTrials.Mcp/Runtime/McpExceptionHandlingMiddleware.cs)
+
+Behavior:
+
+- bounds the MCP request body size
+- applies request timeout metadata to `/mcp`
+- returns problem responses for malformed or oversized requests
+
 ## Caching Design
 
 Caching is implemented by:
@@ -224,6 +258,7 @@ Local development now uses:
 - in-memory rate limiting
 - seeded dev key `clinical-trials-local-dev-key`
 - no local Redis requirement
+- live readiness checks against local SQL
 
 ## Testing Strategy
 
@@ -236,15 +271,16 @@ The current test suite covers:
 - authenticated MCP access
 - inactive client rejection
 - per-client rate limiting
+- readiness failure for SQL and Redis probe failures
+- request-size protection on `/mcp`
 - MCP tool discovery and invocation
 
-The current suite passes with 32 tests.
+The current suite passes with 37 tests.
 
 ## Current Technical Limits
 
-- readiness still validates configuration, not live SQL or study-service connectivity
-- no upstream HTTP resilience policies yet
 - no structured correlation or audit logging yet
+- readiness still intentionally excludes live study-service reachability
 - no deployment automation yet
 
 ## Recommended Next Technical Steps

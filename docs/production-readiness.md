@@ -33,7 +33,7 @@ The service must stay runnable end-to-end on a developer machine without Azure K
 | 0 | Current Baseline | Completed | MCP tool works in dev, stateless mode is enabled, docs and tests exist |
 | 1 | Security Foundation | Completed | API key auth, protected `/mcp`, split health endpoints, local dev key flow, and production-safe host defaults are in place |
 | 2 | Data Plane Hardening | Completed | SQL-backed client registry, hashed API keys, local-memory and Redis-capable rate limiting/caching, admin CLI, and checked-in SQL scripts are in place |
-| 3 | Runtime Resilience | Pending | Upstream resilience, health/readiness, request limits, and failure handling |
+| 3 | Runtime Resilience | Completed | HTTP resilience, request protections, deeper readiness checks, and safer host failure handling are in place |
 | 4 | Observability And Ops | Pending | App Insights, logs, metrics, alerts, and operational runbooks |
 | 5 | Deployment Platform | Pending | Terraform-managed Azure resources, containerization, App Service primary deployment, Container Apps compatibility |
 | 6 | Release Validation | Pending | Security review, load validation, smoke tests, rollback readiness, and production cutover |
@@ -124,16 +124,27 @@ Implementation notes:
 
 ### Phase 3: Runtime Resilience
 
-**Status:** `Pending`
+**Status:** `Completed`
 
-Deliverables:
+Delivered:
 
-- add official .NET HTTP resilience policies for the ClinicalTrials.gov upstream dependency
-- configure timeout, bounded retry, and circuit-breaker behavior
-- add request timeout and body-size protections
-- improve production error handling while preserving MCP-friendly tool errors
-- extend readiness checks for SQL, Redis, and required secret resolution
-- keep ClinicalTrials.gov out of hard readiness while tracking it with telemetry
+- add official .NET HTTP resilience policies for the configured study-service dependency
+- configure total timeout, attempt timeout, bounded retry, and circuit-breaker behavior
+- add MCP request timeout and request-body-size protections
+- add safer host-level exception handling for malformed or oversized requests
+- extend readiness checks for live SQL connectivity
+- extend readiness checks for live Redis connectivity when Redis-backed providers are enabled
+- extend readiness checks for required secrets configuration
+- keep the study-service dependency out of hard readiness
+
+Implementation notes:
+
+- study-service HTTP resilience now uses `Microsoft.Extensions.Http.Resilience`
+- request protection is configuration-driven through `RequestProtection`
+- `/health/ready` now validates configuration plus internal dependency availability
+- readiness still intentionally excludes `ClinicalTrials.Api` reachability
+- local runtime keeps SQL plus in-memory cache and in-memory rate limiting
+- local runtime still does not require Azure services or local Redis
 
 Exit criteria:
 
@@ -254,7 +265,7 @@ Exit criteria:
 - local development will use the existing local SQL Server environment and will not require local Redis
 - database creation and seeding will be delivered as checked-in SQL scripts under `SQL/`, not as startup code or auto-migrations
 - Terraform and Azure DevOps pipelines are in scope
-- production go-live is gated on completion of phases 2 through 6
+- production go-live is gated on completion of phases 4 through 6
 - the MCP server must remain runnable locally throughout the hardening effort
 - local runtime must not require any Azure-managed service
 

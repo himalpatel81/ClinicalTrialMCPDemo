@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text;
+using ClinicalTrials.Mcp.Health;
 using ClinicalTrials.Mcp.Tools;
 using ClinicalTrials.Tests.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 
@@ -42,6 +44,57 @@ public sealed class McpHostIntegrationTests
         var response = await client.GetAsync("/health/ready");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadyHealthEndpoint_ReturnsServiceUnavailable_WhenClientRegistryDatabaseProbeFails()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608"}""")));
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(
+            handler,
+            configureTestServices: services =>
+            {
+                services.AddScoped<IClientRegistryDatabaseProbe, FailingClientRegistryDatabaseProbe>();
+            });
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ReadyHealthEndpoint_ReturnsServiceUnavailable_WhenRedisProbeFails()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608"}""")));
+
+        var configuration = new Dictionary<string, string?>
+        {
+            ["Caching:Provider"] = "Redis",
+            ["ConnectionStrings:Redis"] = "localhost:6379"
+        };
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(
+            handler,
+            configuration,
+            configureTestServices: services =>
+            {
+                services.AddSingleton<IRedisDependencyProbe, FailingRedisDependencyProbe>();
+            });
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
     [Fact]
@@ -158,5 +211,40 @@ public sealed class McpHostIntegrationTests
 
         Assert.NotEqual(HttpStatusCode.TooManyRequests, firstResponse.StatusCode);
         Assert.Equal(HttpStatusCode.TooManyRequests, secondResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task McpEndpoint_ReturnsPayloadTooLarge_WhenRequestBodyExceedsConfiguredLimit()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            Task.FromResult(
+                TestHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"nctId":"NCT04924608","briefTitle":"Study title"}""")));
+
+        var configuration = new Dictionary<string, string?>
+        {
+            ["RequestProtection:MaxRequestBodySizeBytes"] = "5"
+        };
+
+        await using var factory = new TestWebApplicationFactory<StudiesMcpTools>(handler, configuration);
+        using var client = factory.CreateAuthenticatedClient();
+        using var content = new StringContent("""{"x":1}""", Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/mcp", content);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+    }
+
+    private sealed class FailingClientRegistryDatabaseProbe : IClientRegistryDatabaseProbe
+    {
+        public Task ProbeAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("client registry down");
+    }
+
+    private sealed class FailingRedisDependencyProbe : IRedisDependencyProbe
+    {
+        public Task ProbeAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("redis down");
     }
 }

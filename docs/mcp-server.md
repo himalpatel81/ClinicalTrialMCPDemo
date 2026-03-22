@@ -1,6 +1,6 @@
 # ClinicalTrials MCP Server
 
-This document describes the Phase 2 HTTP MCP server that exposes study lookup for ClinicalTrials.gov through `ClinicalTrials.Api`.
+This document describes the Phase 3 HTTP MCP server that exposes study lookup for ClinicalTrials.gov through `ClinicalTrials.Api`.
 
 ## Overview
 
@@ -15,6 +15,8 @@ This document describes the Phase 2 HTTP MCP server that exposes study lookup fo
 - Local development study service target: `http://localhost:5010/api/studies/{nctId}`
 - Local client registry backing store: SQL Server
 - Local cache and rate limiting: in-memory
+- MCP request timeout: `30` seconds by default
+- MCP max request body size: `1048576` bytes by default
 
 The MCP server does not call ClinicalTrials.gov directly. It calls a configurable study service, and the local default points to `ClinicalTrials.Api`.
 
@@ -54,6 +56,7 @@ Failure behavior:
 - study-service connectivity failures return status `502`
 - study-service timeout returns status `504`
 - MCP endpoint rate-limit exhaustion returns HTTP `429`
+- oversized MCP requests return HTTP `413`
 
 ## Connect A Workspace MCP Client
 
@@ -97,3 +100,4 @@ Expected result:
 - the tool returns a readable summary in visible content
 - the tool returns the raw study JSON as structured content
 - the request path used by MCP defaults to `http://localhost:5010/api/studies/{nctId}`
+- `/health/ready` confirms SQL reachability and, when enabled, Redis reachability

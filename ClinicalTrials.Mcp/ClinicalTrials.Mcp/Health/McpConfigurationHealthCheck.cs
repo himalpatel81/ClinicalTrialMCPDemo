@@ -11,9 +11,12 @@ namespace ClinicalTrials.Mcp.Health;
 internal sealed class McpConfigurationHealthCheck(
     IOptions<ApiKeyAuthenticationSettings> apiKeySettings,
     IOptions<StudyServiceSettings> studyServiceSettings,
+    IOptions<StudyServiceResilienceSettings> studyServiceResilienceSettings,
     IOptions<ClientRegistryDatabaseSettings> clientRegistrySettings,
     IOptions<StudyLookupCacheSettings> cacheSettings,
     IOptions<McpRateLimitingSettings> rateLimitingSettings,
+    IOptions<ClinicalTrials.Mcp.Runtime.McpRequestProtectionSettings> requestProtectionSettings,
+    IOptions<SecretsSettings> secretsSettings,
     IConfiguration configuration)
     : IHealthCheck
 {
@@ -35,6 +38,22 @@ internal sealed class McpConfigurationHealthCheck(
             failures.Add("StudyService:StudyLookupPathTemplate must contain '{nctId}'.");
         }
 
+        var studyServiceResilience = studyServiceResilienceSettings.Value;
+        if (studyServiceResilience.TotalRequestTimeoutSeconds <= 0)
+        {
+            failures.Add("StudyService:Resilience:TotalRequestTimeoutSeconds must be greater than zero.");
+        }
+
+        if (studyServiceResilience.AttemptTimeoutSeconds <= 0)
+        {
+            failures.Add("StudyService:Resilience:AttemptTimeoutSeconds must be greater than zero.");
+        }
+
+        if (studyServiceResilience.MaxRetryAttempts < 0)
+        {
+            failures.Add("StudyService:Resilience:MaxRetryAttempts must be zero or greater.");
+        }
+
         var settings = apiKeySettings.Value;
         if (string.IsNullOrWhiteSpace(settings.HeaderName))
         {
@@ -44,6 +63,24 @@ internal sealed class McpConfigurationHealthCheck(
         if (string.IsNullOrWhiteSpace(clientRegistrySettings.Value.ConnectionString))
         {
             failures.Add("ConnectionStrings:ClientRegistry is missing.");
+        }
+
+        var requestProtection = requestProtectionSettings.Value;
+        if (requestProtection.RequestTimeoutSeconds <= 0)
+        {
+            failures.Add("RequestProtection:RequestTimeoutSeconds must be greater than zero.");
+        }
+
+        if (requestProtection.MaxRequestBodySizeBytes <= 0)
+        {
+            failures.Add("RequestProtection:MaxRequestBodySizeBytes must be greater than zero.");
+        }
+
+        var secrets = secretsSettings.Value;
+        if (secrets.Provider == SecretsProvider.AzureKeyVault &&
+            !Uri.TryCreate(secrets.AzureKeyVault.VaultUri, UriKind.Absolute, out _))
+        {
+            failures.Add("Secrets:AzureKeyVault:VaultUri must be an absolute URI when Azure Key Vault is enabled.");
         }
 
         if (cacheSettings.Value.Provider == CacheProvider.Redis &&

@@ -1,5 +1,7 @@
 using ClinicalTrials.Shared;
 using Microsoft.Extensions.Options;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 
 namespace ClinicalTrials.Mcp.Services;
 
@@ -32,7 +34,15 @@ public class StudyServiceHttpClient(
         {
             return StudyLookupResult.RequestFailed(ex);
         }
+        catch (BrokenCircuitException ex)
+        {
+            return StudyLookupResult.RequestFailed(ex);
+        }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            return StudyLookupResult.TimedOut(ex);
+        }
+        catch (TimeoutRejectedException ex)
         {
             return StudyLookupResult.TimedOut(ex);
         }

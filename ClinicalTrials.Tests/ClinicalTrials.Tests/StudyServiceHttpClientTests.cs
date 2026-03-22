@@ -3,6 +3,8 @@ using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Shared;
 using ClinicalTrials.Tests.Testing;
 using Microsoft.Extensions.Options;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 
 namespace ClinicalTrials.Tests;
 
@@ -79,6 +81,30 @@ public sealed class StudyServiceHttpClientTests
 
         Assert.True(result.HasFailure);
         Assert.Equal(StudyLookupFailureKind.TimedOut, result.FailureKind);
+    }
+
+    [Fact]
+    public async Task GetStudyAsync_MapsTimeoutRejectedExceptionToTimedOutFailure()
+    {
+        var handler = new TestHttpMessageHandler((_, _) => throw new TimeoutRejectedException("timeout"));
+        var service = CreateService(handler, DefaultSettings);
+
+        var result = await service.GetStudyAsync("NCT04924608", CancellationToken.None);
+
+        Assert.True(result.HasFailure);
+        Assert.Equal(StudyLookupFailureKind.TimedOut, result.FailureKind);
+    }
+
+    [Fact]
+    public async Task GetStudyAsync_MapsBrokenCircuitExceptionToRequestFailure()
+    {
+        var handler = new TestHttpMessageHandler((_, _) => throw new BrokenCircuitException("circuit open"));
+        var service = CreateService(handler, DefaultSettings);
+
+        var result = await service.GetStudyAsync("NCT04924608", CancellationToken.None);
+
+        Assert.True(result.HasFailure);
+        Assert.Equal(StudyLookupFailureKind.RequestFailed, result.FailureKind);
     }
 
     private static StudyServiceSettings DefaultSettings => new()

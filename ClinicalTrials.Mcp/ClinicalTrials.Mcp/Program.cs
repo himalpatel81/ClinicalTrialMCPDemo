@@ -3,6 +3,7 @@ using ClinicalTrials.Mcp.Caching;
 using ClinicalTrials.Mcp.Data;
 using ClinicalTrials.Mcp.Health;
 using ClinicalTrials.Mcp.RateLimiting;
+using ClinicalTrials.Mcp.Runtime;
 using ClinicalTrials.Mcp.Services;
 using ClinicalTrials.Mcp.Tools;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
@@ -11,6 +12,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http.Resilience;
 using ModelContextProtocol.Server;
 using StackExchange.Redis;
 
@@ -25,6 +27,17 @@ builder.Services.AddOptions<StudyServiceSettings>()
         settings => !string.IsNullOrWhiteSpace(settings.StudyLookupPathTemplate)
             && settings.StudyLookupPathTemplate.Contains(StudyServiceSettings.NctIdPlaceholder, StringComparison.Ordinal),
         $"Configuration '{StudyServiceSettings.SectionName}:StudyLookupPathTemplate' must contain '{StudyServiceSettings.NctIdPlaceholder}'.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<StudyServiceResilienceSettings>()
+    .BindConfiguration(StudyServiceResilienceSettings.SectionName)
+    .Validate(settings => settings.TotalRequestTimeoutSeconds > 0, $"Configuration '{StudyServiceResilienceSettings.SectionName}:TotalRequestTimeoutSeconds' must be greater than zero.")
+    .Validate(settings => settings.AttemptTimeoutSeconds > 0, $"Configuration '{StudyServiceResilienceSettings.SectionName}:AttemptTimeoutSeconds' must be greater than zero.")
+    .Validate(settings => settings.MaxRetryAttempts >= 0, $"Configuration '{StudyServiceResilienceSettings.SectionName}:MaxRetryAttempts' must be zero or greater.")
+    .Validate(settings => settings.CircuitBreakerFailureRatio > 0 && settings.CircuitBreakerFailureRatio <= 1, $"Configuration '{StudyServiceResilienceSettings.SectionName}:CircuitBreakerFailureRatio' must be between 0 and 1.")
+    .Validate(settings => settings.CircuitBreakerMinimumThroughput > 0, $"Configuration '{StudyServiceResilienceSettings.SectionName}:CircuitBreakerMinimumThroughput' must be greater than zero.")
+    .Validate(settings => settings.CircuitBreakerSamplingWindowSeconds > 0, $"Configuration '{StudyServiceResilienceSettings.SectionName}:CircuitBreakerSamplingWindowSeconds' must be greater than zero.")
+    .Validate(settings => settings.CircuitBreakerBreakDurationSeconds > 0, $"Configuration '{StudyServiceResilienceSettings.SectionName}:CircuitBreakerBreakDurationSeconds' must be greater than zero.")
     .ValidateOnStart();
 
 builder.Services.AddOptions<ApiKeyAuthenticationSettings>()
@@ -57,6 +70,20 @@ builder.Services.AddOptions<McpRateLimitingSettings>()
     .Validate(settings => settings.GlobalPermitLimit > 0, $"Configuration '{McpRateLimitingSettings.SectionName}:GlobalPermitLimit' must be greater than zero.")
     .ValidateOnStart();
 
+builder.Services.AddOptions<McpRequestProtectionSettings>()
+    .BindConfiguration(McpRequestProtectionSettings.SectionName)
+    .Validate(settings => settings.RequestTimeoutSeconds > 0, $"Configuration '{McpRequestProtectionSettings.SectionName}:RequestTimeoutSeconds' must be greater than zero.")
+    .Validate(settings => settings.MaxRequestBodySizeBytes > 0, $"Configuration '{McpRequestProtectionSettings.SectionName}:MaxRequestBodySizeBytes' must be greater than zero.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<SecretsSettings>()
+    .BindConfiguration(SecretsSettings.SectionName)
+    .Validate(
+        settings => settings.Provider != SecretsProvider.AzureKeyVault
+            || Uri.TryCreate(settings.AzureKeyVault.VaultUri, UriKind.Absolute, out _),
+        $"Configuration '{SecretsSettings.SectionName}:AzureKeyVault:VaultUri' must be an absolute URI when Azure Key Vault is enabled.")
+    .ValidateOnStart();
+
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
@@ -66,6 +93,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddMemoryCache();
+builder.Services.AddRequestTimeouts();
 
 var cacheProvider = builder.Configuration.GetValue<CacheProvider>($"{StudyLookupCacheSettings.SectionName}:Provider");
 var rateLimitProvider = builder.Configuration.GetValue<RateLimitProvider>($"{McpRateLimitingSettings.SectionName}:Provider");
@@ -95,12 +123,19 @@ builder.Services.AddAuthorizationBuilder()
         policy.RequireClaim(ApiKeyAuthenticationDefaults.ApiKeyActiveClaimType, bool.TrueString);
     });
 
-builder.Services.AddHealthChecks()
+var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<McpConfigurationHealthCheck>(
         "mcp_configuration",
+        tags: ["ready"])
+    .AddCheck<ClientRegistryDatabaseHealthCheck>(
+        "client_registry_database",
+        tags: ["ready"])
+    .AddCheck<RedisDependencyHealthCheck>(
+        "redis_dependency",
         tags: ["ready"]);
 
 builder.Services.AddScoped<IClientRegistryStore, SqlClientRegistryStore>();
+builder.Services.AddScoped<IClientRegistryDatabaseProbe, ClientRegistryDatabaseProbe>();
 
 if (cacheProvider == CacheProvider.Redis)
 {
@@ -120,11 +155,30 @@ else
     builder.Services.AddSingleton<IMcpRateLimitStore, MemoryMcpRateLimitStore>();
 }
 
-builder.Services.AddHttpClient(StudyServiceHttpClient.ClientName, (services, client) =>
+if (cacheProvider == CacheProvider.Redis || rateLimitProvider == RateLimitProvider.Redis)
 {
-    var settings = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StudyServiceSettings>>().Value;
-    client.BaseAddress = new Uri(settings.BaseUrl);
-});
+    builder.Services.AddSingleton<IRedisDependencyProbe, RedisDependencyProbe>();
+}
+
+var studyServiceResilience = builder.Configuration.GetSection(StudyServiceResilienceSettings.SectionName).Get<StudyServiceResilienceSettings>()
+    ?? new StudyServiceResilienceSettings();
+
+builder.Services.AddHttpClient(StudyServiceHttpClient.ClientName, (services, client) =>
+    {
+        var settings = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<StudyServiceSettings>>().Value;
+        client.BaseAddress = new Uri(settings.BaseUrl);
+        client.Timeout = Timeout.InfiniteTimeSpan;
+    })
+    .AddStandardResilienceHandler(options =>
+    {
+        options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(studyServiceResilience.TotalRequestTimeoutSeconds);
+        options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(studyServiceResilience.AttemptTimeoutSeconds);
+        options.Retry.MaxRetryAttempts = studyServiceResilience.MaxRetryAttempts;
+        options.CircuitBreaker.FailureRatio = studyServiceResilience.CircuitBreakerFailureRatio;
+        options.CircuitBreaker.MinimumThroughput = studyServiceResilience.CircuitBreakerMinimumThroughput;
+        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(studyServiceResilience.CircuitBreakerSamplingWindowSeconds);
+        options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(studyServiceResilience.CircuitBreakerBreakDurationSeconds);
+    });
 builder.Services.AddScoped<StudyServiceHttpClient>();
 builder.Services.AddScoped<IStudyLookupEndpointClient, CachedStudyLookupEndpointClient>();
 
@@ -136,16 +190,23 @@ builder.Services.AddMcpServer()
     .WithToolsFromAssembly(typeof(StudiesMcpTools).Assembly);
 
 var app = builder.Build();
+var requestProtectionSettings = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<McpRequestProtectionSettings>>().Value;
 
 if (app.Configuration.GetValue<bool>("Hosting:ForwardedHeaders:Enabled"))
 {
     app.UseForwardedHeaders();
 }
 
+app.UseMiddleware<McpExceptionHandlingMiddleware>();
+app.UseRequestTimeouts();
 app.UseAuthentication();
 app.UseWhen(
     context => context.Request.Path.StartsWithSegments("/mcp", StringComparison.OrdinalIgnoreCase),
-    branch => branch.UseMiddleware<McpRateLimitingMiddleware>());
+    branch =>
+    {
+        branch.UseMiddleware<McpRequestProtectionMiddleware>();
+        branch.UseMiddleware<McpRateLimitingMiddleware>();
+    });
 app.UseAuthorization();
 
 app.MapGet("/health/live", () => Results.Ok("healthy"))
@@ -154,10 +215,13 @@ app.MapHealthChecks(
         "/health/ready",
         new HealthCheckOptions
         {
-            Predicate = check => check.Tags.Contains("ready")
+            Predicate = check => check.Tags.Contains("ready"),
+            ResponseWriter = McpHealthCheckResponseWriter.WriteAsync
         })
     .AllowAnonymous();
-app.MapMcp("/mcp")
+var mcpEndpoint = app.MapMcp("/mcp")
     .RequireAuthorization(ApiKeyAuthenticationDefaults.ActiveClientPolicyName);
+
+mcpEndpoint.WithRequestTimeout(TimeSpan.FromSeconds(requestProtectionSettings.RequestTimeoutSeconds));
 
 app.Run();

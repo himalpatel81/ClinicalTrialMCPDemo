@@ -114,6 +114,12 @@ Important endpoints:
 - liveness endpoint: `http://localhost:5011/health/live`
 - readiness endpoint: `http://localhost:5011/health/ready`
 
+Phase 3 defaults:
+
+- study-service resilience with retry, timeout, and circuit breaker
+- MCP request timeout: `30` seconds
+- MCP max request body size: `1048576` bytes
+
 ## Local MCP Authentication
 
 The MCP endpoint requires an API key.
@@ -152,12 +158,16 @@ Invoke-WebRequest http://localhost:5011/health/ready
 Expected result:
 
 - `/health/live` returns HTTP `200 OK` with body `healthy`
-- `/health/ready` returns HTTP `200 OK`
+- `/health/ready` returns HTTP `200 OK` with a JSON readiness report when local SQL is reachable
 
 Important:
 
-- `/health/ready` validates MCP host configuration for the current phase
-- `/health/ready` does not prove `ClinicalTrials.Api` is currently reachable
+- `/health/ready` now validates:
+  - MCP host configuration
+  - client-registry SQL connectivity
+  - Redis connectivity if Redis-backed providers are enabled
+  - secrets-provider configuration
+- `/health/ready` still does not prove `ClinicalTrials.Api` is currently reachable
 
 ## Connect An MCP Client
 
@@ -260,6 +270,8 @@ The test suite covers:
 - admin service behavior
 - MCP host integration behavior
 - rate limiting behavior
+- readiness dependency behavior
+- request-size protection behavior
 
 ## Common Troubleshooting
 
@@ -293,12 +305,27 @@ Checks:
 - retry after the current rate-limit window
 - check whether the local client has a permit limit override in the client registry
 
+### MCP Returns `413 Payload Too Large`
+
+Checks:
+
+- verify the MCP request body is below `RequestProtection:MaxRequestBodySizeBytes`
+- verify the client is not sending an unexpectedly large MCP payload
+
 ### MCP Returns `502 Bad Gateway`
 
 Checks:
 
 - verify `ClinicalTrials.Api` is running on `http://localhost:5010`
 - verify the REST API can answer `http://localhost:5010/api/studies/NCT04924608`
+
+### MCP Returns `504 Gateway Timeout`
+
+Checks:
+
+- verify `ClinicalTrials.Api` is responsive
+- verify the study-service call is not exceeding the configured resilience timeout budget
+- review `StudyService:Resilience` settings if you changed them locally
 
 ## Related Documents
 

@@ -1,3 +1,4 @@
+using ClinicalTrials.Mcp.Health;
 using ClinicalTrials.Shared;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -10,7 +11,8 @@ namespace ClinicalTrials.Tests.Testing;
 internal sealed class TestWebApplicationFactory<TEntryPoint>(
     HttpMessageHandler handler,
     IReadOnlyDictionary<string, string?>? additionalConfiguration = null,
-    TestClientRegistryStore? clientRegistryStore = null)
+    TestClientRegistryStore? clientRegistryStore = null,
+    Action<IServiceCollection>? configureTestServices = null)
     : WebApplicationFactory<TEntryPoint> where TEntryPoint : class
 {
     public const string DefaultApiKey = "integration-test-api-key";
@@ -56,6 +58,10 @@ internal sealed class TestWebApplicationFactory<TEntryPoint>(
                 .ConfigurePrimaryHttpMessageHandler(() => handler);
             services.AddScoped<ClinicalTrials.Mcp.Data.IClientRegistryStore>(_ =>
                 clientRegistryStore ?? TestClientRegistryStore.CreateDefault(DefaultApiKey));
+            services.AddScoped<IClientRegistryDatabaseProbe, SuccessfulClientRegistryDatabaseProbe>();
+            services.AddSingleton<IRedisDependencyProbe, SuccessfulRedisDependencyProbe>();
+
+            configureTestServices?.Invoke(services);
         });
     }
 
@@ -65,5 +71,15 @@ internal sealed class TestWebApplicationFactory<TEntryPoint>(
         client.DefaultRequestHeaders.Add(ApiKeyHeaderName, DefaultApiKey);
 
         return client;
+    }
+
+    private sealed class SuccessfulClientRegistryDatabaseProbe : IClientRegistryDatabaseProbe
+    {
+        public Task ProbeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class SuccessfulRedisDependencyProbe : IRedisDependencyProbe
+    {
+        public Task ProbeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

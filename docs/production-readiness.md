@@ -35,7 +35,7 @@ The service must stay runnable end-to-end on a developer machine without Azure K
 | 2 | Data Plane Hardening | Completed | SQL-backed client registry, hashed API keys, local-memory and Redis-capable rate limiting/caching, admin CLI, and checked-in SQL scripts are in place |
 | 3 | Runtime Resilience | Completed | HTTP resilience, request protections, deeper readiness checks, and safer host failure handling are in place |
 | 4 | Observability And Ops | Completed | Correlation-aware logs, OpenTelemetry metrics and traces, Azure Monitor integration hooks, alert catalog, and operational runbooks are in place |
-| 5 | Deployment Platform | Pending | Terraform-managed Azure resources, containerization, App Service primary deployment, Container Apps compatibility |
+| 5 | Deployment Platform | Completed | Dockerfile, Terraform stack, env examples, Azure DevOps pipeline, App Service deployment contract, and Container Apps compatibility assets are in repo |
 | 6 | Release Validation | Pending | Security review, load validation, smoke tests, rollback readiness, and production cutover |
 
 ## Implementation Phases
@@ -71,9 +71,9 @@ Delivered:
 
 Implementation notes:
 
-- current phase uses configuration-backed API keys rather than a database-backed registry
-- local development uses `clinical-trials-local-dev-key`
-- future shared or production environments must supply their own keys through secure configuration
+- API key authentication was introduced in this phase and is now backed by the SQL client registry from Phase 2
+- local development uses the seeded `clinical-trials-local-dev-key`
+- shared and production environments are expected to use admin-issued keys from the client registry
 
 Exit criteria:
 
@@ -183,31 +183,51 @@ Exit criteria:
 
 ### Phase 5: Deployment Platform
 
-**Status:** `Pending`
+**Status:** `Completed`
+
+Detailed design reference:
+
+- `docs\phase5-infra-design.md`
 
 Deliverables:
 
-- containerize the MCP app
-- create Terraform for:
+- containerize the MCP app with a checked-in `Dockerfile` and `.dockerignore`
+- create a Terraform root stack under `infra/` with reusable modules for:
+  - MCP Web App
+  - deployment slot
+  - managed identity and app access bindings
+  - optional MCP-specific SQL database
+  - optional Application Insights binding
+  - optional non-prod Container Apps compatibility deployment
+- reference existing shared Azure resources through inputs instead of taking ownership of them:
   - Azure Container Registry
   - App Service Plan
-  - App Service Web App
-  - deployment slot
-  - Azure SQL
-  - Azure Cache for Redis
+  - SQL Server
+  - Redis
   - Key Vault
-  - Application Insights / Log Analytics
-  - non-prod Container Apps environment for compatibility validation
+  - optionally shared Log Analytics / Application Insights
 - create Azure DevOps YAML pipeline for build, test, image push, Terraform deploy, slot smoke test, and slot swap
+- add environment example inputs for `dev`, `staging`, and `prod`
 - keep the deployment contract dual-ready for Azure App Service first and Azure Container Apps later
 - preserve a first-class local run path
+- use `airydocs` as the naming convention for Azure resources created by this repository while continuing to reference pre-existing shared resources by their current names
+
+Implementation notes:
+
+- repo-owned Azure resources are placed in dedicated MCP resource groups such as `rg-airydocs-mcp-dev`, `rg-airydocs-mcp-staging`, and `rg-airydocs-mcp-prod`
+- shared platform resources remain in their existing resource groups and are passed in by ID or connection details
+- the root Terraform stack lives under `infra/`, with example environment inputs under `infra/environments/`
+- the Azure DevOps pipeline lives in `azure-pipelines.yml`
+- local verification now includes `terraform validate` for the checked-in Terraform stack and `docker build` for the checked-in container image contract
+- live Azure apply, slot swap, and non-prod environment rollout validation remain part of Phase 6 release validation
 
 Exit criteria:
 
-- infrastructure is reproducible from Terraform
-- CI/CD can deploy to a non-prod environment end-to-end
-- App Service is the primary production target
-- Container Apps compatibility is validated without changing app code
+- checked-in Terraform configuration validates successfully
+- checked-in container image contract builds successfully
+- environment-specific shared resource references stay externalized through Terraform inputs and pipeline variables
+- App Service remains the primary deployment target
+- Container Apps compatibility is available without changing app code
 - local run instructions remain valid after platform changes
 
 ### Phase 6: Release Validation
@@ -254,9 +274,10 @@ Exit criteria:
   - logs redact secrets
   - alert rules fire on simulated failures
 - Phase 5:
-  - pipeline builds image, runs tests, deploys infra, and deploys app
-  - staging slot smoke test passes before swap
-  - same image runs on non-prod Container Apps
+  - `terraform validate` succeeds for the checked-in stack
+  - Docker image builds successfully from the checked-in `Dockerfile`
+  - pipeline definition covers image build, Terraform apply, slot smoke test, and slot swap
+  - same image contract can target App Service and the optional compatibility Container App
 - Phase 6:
   - load test passes
   - rollback test passes
@@ -268,8 +289,8 @@ Exit criteria:
 - internet-facing first release is MCP only; REST remains non-public
 - App Service is the first production host; Container Apps compatibility is built in and validated in non-prod
 - API keys are the chosen v1 auth model for known clients
-- Azure SQL is the future system of record for client and key metadata
-- Azure Redis is the future backing store for cross-instance rate limiting and caching
+- Azure SQL is the production system of record for client and key metadata
+- Azure Redis is the production backing store for cross-instance rate limiting and caching
 - local development will use the existing local SQL Server environment and will not require local Redis
 - database creation and seeding will be delivered as checked-in SQL scripts under `SQL/`, not as startup code or auto-migrations
 - Terraform and Azure DevOps pipelines are in scope

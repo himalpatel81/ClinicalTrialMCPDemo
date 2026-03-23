@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+**/bin
+**/obj
+**/.vs
+**/*.user
+**/*.suo
+docs
+SQL
+infra/.terraform
+infra/*.tfstate
+infra/*.tfstate.*

@@ -1,0 +1,4 @@
+resource_group_name  = "<tfstate-resource-group>"
+storage_account_name = "<tfstate-storage-account>"
+container_name       = "<tfstate-container>"
+key                  = "airydocs-mcp-prod.tfstate"

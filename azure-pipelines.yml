@@ -1,0 +1,234 @@
+trigger:
+- main
+
+pr:
+- main
+
+parameters:
+- name: environment
+  type: string
+  default: dev
+  values:
+  - dev
+  - staging
+  - prod
+
+- name: deployContainerAppsValidation
+  type: boolean
+  default: false
+
+variables:
+- group: airydocs-mcp-${{ parameters.environment }}
+- name: vmImage
+  value: ubuntu-latest
+- name: dotnetSdkVersion
+  value: 10.0.x
+- name: terraformVersion
+  value: 1.11.1
+- name: solutionPath
+  value: ClinicalTrials.Api/ClinicalTrials.Api.slnx
+- name: dockerfilePath
+  value: Dockerfile
+- name: imageRepository
+  value: airydocs/mcp
+- name: terraformWorkingDirectory
+  value: infra
+
+stages:
+- stage: BuildTest
+  displayName: Build and Test
+  jobs:
+  - job: BuildAndTest
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - task: UseDotNet@2
+      inputs:
+        packageType: sdk
+        version: $(dotnetSdkVersion)
+    - script: dotnet restore $(solutionPath)
+      displayName: dotnet restore
+    - script: dotnet build $(solutionPath) -c Release --no-restore
+      displayName: dotnet build
+    - script: dotnet test $(solutionPath) -c Release --no-build
+      displayName: dotnet test
+
+- stage: Package
+  displayName: Build and Push Container Image
+  dependsOn: BuildTest
+  jobs:
+  - job: BuildPushImage
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - task: Docker@2
+      displayName: docker build and push
+      inputs:
+        command: buildAndPush
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: $(imageRepository)
+        Dockerfile: $(dockerfilePath)
+        buildContext: $(Build.SourcesDirectory)
+        tags: |
+          $(Build.BuildId)
+          latest
+
+- stage: TerraformDeploy
+  displayName: Terraform Apply
+  dependsOn: Package
+  jobs:
+  - job: TerraformApply
+    displayName: Terraform init, validate, plan, apply
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - bash: |
+        set -euo pipefail
+        curl -fsSL "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip" -o terraform.zip
+        unzip -o terraform.zip
+        sudo mv terraform /usr/local/bin/terraform
+        terraform version
+      displayName: Install Terraform
+
+    - bash: |
+        set -euo pipefail
+        cat > "$(terraformWorkingDirectory)/terraform.auto.tfvars.json" <<'EOF'
+        $(terraformVariablesJson)
+        EOF
+      displayName: Write terraform.auto.tfvars.json
+
+    - task: AzureCLI@2
+      displayName: Terraform apply
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          terraform -chdir="$(terraformWorkingDirectory)" init \
+            -backend-config="resource_group_name=$(terraformStateResourceGroupName)" \
+            -backend-config="storage_account_name=$(terraformStateStorageAccountName)" \
+            -backend-config="container_name=$(terraformStateContainerName)" \
+            -backend-config="key=airydocs-mcp-${{ parameters.environment }}.tfstate"
+
+          terraform -chdir="$(terraformWorkingDirectory)" validate
+          terraform -chdir="$(terraformWorkingDirectory)" plan -out=tfplan
+          terraform -chdir="$(terraformWorkingDirectory)" apply -auto-approve tfplan
+
+          web_app_name="$(terraform -chdir="$(terraformWorkingDirectory)" output -raw web_app_name)"
+          web_app_hostname="$(terraform -chdir="$(terraformWorkingDirectory)" output -raw web_app_default_hostname)"
+          resource_group_name="$(terraform -chdir="$(terraformWorkingDirectory)" output -raw resource_group_name)"
+          staging_slot_name="$(terraform -chdir="$(terraformWorkingDirectory)" output -raw staging_slot_name)"
+          staging_slot_hostname="$(terraform -chdir="$(terraformWorkingDirectory)" output -raw staging_slot_default_hostname)"
+          compatibility_container_app_name="$(terraform -chdir="$(terraformWorkingDirectory)" output -raw compatibility_container_app_name)"
+          acr_login_server="$(python3 - <<'PY'
+import json
+from pathlib import Path
+print(json.loads(Path("$(terraformWorkingDirectory)/terraform.auto.tfvars.json").read_text())["acr_login_server"])
+PY
+          )"
+
+          echo "##vso[task.setvariable variable=webAppName;isOutput=true]${web_app_name}"
+          echo "##vso[task.setvariable variable=webAppHostname;isOutput=true]${web_app_hostname}"
+          echo "##vso[task.setvariable variable=resourceGroupName;isOutput=true]${resource_group_name}"
+          echo "##vso[task.setvariable variable=stagingSlotName;isOutput=true]${staging_slot_name}"
+          echo "##vso[task.setvariable variable=stagingSlotHostname;isOutput=true]${staging_slot_hostname}"
+          echo "##vso[task.setvariable variable=compatibilityContainerAppName;isOutput=true]${compatibility_container_app_name}"
+          echo "##vso[task.setvariable variable=acrLoginServer;isOutput=true]${acr_login_server}"
+      name: terraform_apply
+
+- stage: DeploySlot
+  displayName: Deploy to Staging Slot and Smoke Test
+  dependsOn: TerraformDeploy
+  variables:
+    webAppName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.webAppName'] ]
+    webAppHostname: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.webAppHostname'] ]
+    resourceGroupName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.resourceGroupName'] ]
+    stagingSlotName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.stagingSlotName'] ]
+    stagingSlotHostname: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.stagingSlotHostname'] ]
+    compatibilityContainerAppName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.compatibilityContainerAppName'] ]
+    acrLoginServer: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.acrLoginServer'] ]
+  jobs:
+  - job: DeployAndVerify
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - task: AzureCLI@2
+      displayName: Deploy container image to staging slot
+      condition: ne(variables['stagingSlotName'], '')
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az webapp config container set \
+            --resource-group "$(resourceGroupName)" \
+            --name "$(webAppName)" \
+            --slot "$(stagingSlotName)" \
+            --docker-custom-image-name "$(acrLoginServer)/$(imageRepository):$(Build.BuildId)" \
+            --docker-registry-server-url "https://$(acrLoginServer)"
+
+    - task: AzureCLI@2
+      displayName: Update optional compatibility container app
+      condition: and(eq('${{ parameters.deployContainerAppsValidation }}', 'true'), ne(variables['compatibilityContainerAppName'], ''))
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az containerapp update \
+            --resource-group "$(resourceGroupName)" \
+            --name "$(compatibilityContainerAppName)" \
+            --image "$(acrLoginServer)/$(imageRepository):$(Build.BuildId)"
+
+    - bash: |
+        set -euo pipefail
+        if [ -z "$(stagingSlotHostname)" ]; then
+          echo "No staging slot configured; skipping smoke test."
+          exit 0
+        fi
+
+        slot_health_url="https://$(stagingSlotHostname)/health/ready"
+        for attempt in $(seq 1 20); do
+          if curl --fail --silent --show-error "${slot_health_url}" > /tmp/mcp-ready.json; then
+            cat /tmp/mcp-ready.json
+            exit 0
+          fi
+
+          echo "Waiting for slot readiness (${attempt}/20)..."
+          sleep 15
+        done
+
+        echo "Staging slot did not become ready in time."
+        exit 1
+      displayName: Smoke test staging slot
+
+- stage: SwapSlot
+  displayName: Swap Staging Slot to Production
+  dependsOn: DeploySlot
+  condition: succeeded()
+  variables:
+    webAppName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.webAppName'] ]
+    resourceGroupName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.resourceGroupName'] ]
+    stagingSlotName: $[ stageDependencies.TerraformDeploy.TerraformApply.outputs['terraform_apply.stagingSlotName'] ]
+  jobs:
+  - job: SwapSlotJob
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - task: AzureCLI@2
+      displayName: Swap staging slot into production
+      condition: ne(variables['stagingSlotName'], '')
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az webapp deployment slot swap \
+            --resource-group "$(resourceGroupName)" \
+            --name "$(webAppName)" \
+            --slot "$(stagingSlotName)" \
+            --target-slot production

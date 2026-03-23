@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "clinical-trials-mcp": {
+      "type": "http",
+      "url": "http://localhost:5011/mcp",
+      "headers": {
+        "X-Api-Key": "clinical-trials-local-dev-key"
+      }
+    }
+  },
+  "inputs": []
+}
